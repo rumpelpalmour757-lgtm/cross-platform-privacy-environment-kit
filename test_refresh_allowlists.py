@@ -130,7 +130,7 @@ class RefreshTests(unittest.TestCase):
                 with self.assertRaisesRegex(OSError, "disk full"):
                     publish_preview(output, [])
             self.assertTrue(dump.call_args.args[1].closed)
-            self.assertEqual(list(output.iterdir()), [original])
+            self.assertEqual([path.resolve() for path in output.iterdir()], [original.resolve()])
             self.assertEqual(original.read_bytes(), original_bytes)
 
     def test_disappearing_preview_does_not_abort_freshness_check(self):
