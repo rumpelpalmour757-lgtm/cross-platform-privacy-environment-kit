@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>跨平台网络隐私与本机环境工具包 v0.4.0 · 交互式展示与配置工作台</title>
+  <meta name="description" content="覆盖 Windows、macOS、Linux、Android、iOS 的网络隐私体检、路由生成、Windows 断网开关与防 DNS 旁路规划、本地快照备份与干净版跨端实测报告。MIT 开源，Celeste × 哈基米 (Gemini) 协作打造。">
+  <link rel="icon" type="image/svg+xml" href="images/logo.svg">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img src="images/logo.svg" alt="工具包图标">
+        <div>
+          <div class="brand-title">跨平台网络隐私与本机环境工具包 <span class="badge badge-accent">v0.4.0 · MIT</span></div>
+          <div class="brand-sub">Celeste × 哈基米 (Gemini) · 离线零联网交互工作台</div>
+        </div>
+      </div>
+      <div class="topbar-actions">
+        <span class="pill-status" title="本页面零外部 CDN、零遥测请求，双击本地 HTML 即可运行"><span class="dot-pulse"></span>离线零外联</span>
+        <button type="button" class="btn btn-sm" id="themeToggle" aria-label="切换浅色或深色主题">深色模式</button>
+        <a class="btn btn-sm btn-navy" href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit" target="_blank" rel="noopener">GitHub 仓库</a>
+      </div>
+    </div>
+    <nav class="tabbar-wrap" aria-label="工作台功能切换">
+      <div class="tabbar" role="tablist">
+        <button type="button" class="tab-btn active" role="tab" aria-selected="true" data-tab="overview">总览 · 项目展示</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="routing">路由工作台</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="firewall">断网与 DNS 规划器</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="checklist">跨端自检清单</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="report">干净版实测报告</button>
+      </div>
+    </nav>
+  </header>
+
+  <main class="container">
+    <!-- ==================== Tab 1: 总览 ==================== -->
+    <section id="panel-overview" class="panel active" role="tabpanel">
+      <div class="hero">
+        <div class="hero-eyebrow">CROSS-PLATFORM PRIVACY ENVIRONMENT KIT · MIT OPEN SOURCE</div>
+        <h1>把跨端防泄漏、断网兜底与只读体检做成可预览、可校验、可回滚的工程套件</h1>
+        <p class="hero-lead">
+          同一套工具包覆盖 <strong>Windows、macOS、Linux、Android、iOS</strong>。默认操作全部只读并自动脱敏本机路径，不要求提供账号凭据，也不做平台检测绕过——只专注网络路径一致、DNS 洁净、断线不静默回落与本地配置安全备份。
+        </p>
+        <div class="hero-cta">
+          <button type="button" class="btn btn-primary" data-jump="routing">打开路由 JSON 生成器</button>
+          <button type="button" class="btn btn-navy" data-jump="firewall">规划 Windows 断网开关</button>
+          <button type="button" class="btn" data-jump="report">查看干净原创实测报告</button>
+          <a class="btn" href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/blob/main/docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md" data-local-href="CLIENT-BOUNDARY-AND-LEAK-REPORT.md" target="_blank" rel="noopener">阅读完整 Markdown 报告</a>
+        </div>
+        <div class="grid-4">
+          <div class="stat-box">
+            <div class="stat-val">5 大平台</div>
+            <div class="stat-label">Win / macOS / Linux / Android / iOS</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-val">30 项生态域</div>
+            <div class="stat-label">与 <code>build_routing.py</code> 严格同步</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-val">128 项测试</div>
+            <div class="stat-label">Windows + Linux 离线单元测试覆盖</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-val">0 第三方镜像</div>
+            <div class="stat-label">纯原创报告 + MIT 许可公开仓库</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 平台快捷矩阵 -->
+      <div class="card section">
+        <div class="section-head">
+          <div>
+            <h2>按你的设备选择入口</h2>
+            <p>点击任意平台查看对应的起手命令、核心模板与需要提前知道的架构边界。</p>
+          </div>
+          <span class="badge">Python 3.10+ · PowerShell 5.1+</span>
+        </div>
+        <div class="chip-row" id="platformChips"></div>
+        <div id="platformDetail"></div>
+      </div>
+
+      <!-- 四层防泄漏互动架构 -->
+      <div class="card section">
+        <div class="section-head">
+          <div>
+            <h2>四层防泄漏与本机卫生架构</h2>
+            <p>点击左侧任意层级，查看对应的脚本、解决的真实隐患以及必须知晓的副作用。</p>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div id="layerList" style="display:grid; gap:10px;"></div>
+          <div id="layerDetail" class="callout" style="display:flex; flex-direction:column; justify-content:space-between;"></div>
+        </div>
+      </div>
+
+      <!-- 哈基米协作展示区 -->
+      <div class="hajimi-showcase section" id="hajimiSection">
+        <img src="images/hajimi-mascot.svg" alt="哈基米（Gemini）盾牌猫徽章" class="hajimi-avatar" id="hajimiAvatar">
+        <div>
+          <h2 class="hajimi-title">Celeste × 哈基米 (Gemini) · 开放协作打造</h2>
+          <p class="hajimi-desc">
+            本项目由作者 <strong>Celeste</strong>（<code>rumpelpalmour757-lgtm</code>）主导需求、架构决策与安全边界把关；
+            公开开源版 <code>v0.4.0</code> 的 MIT 合规整理、第三方镜像清理与干净原创综合报告撰写、矢量视觉资产及这套零依赖离线交互工作台，由 <strong>哈基米（Gemini）</strong> 协作完成（前期脚本与单元测试亦得益于 Codex / Claude 的辅助验证）。
+          </p>
+          <div class="hajimi-tip-box" id="hajimiTipBox"></div>
+          <div class="hajimi-meta">
+            <button type="button" class="btn btn-sm btn-hajimi" id="pokeHajimiBtn">戳一下哈基米 · 换一条避坑冷知识</button>
+            <span class="badge" style="background:rgba(255,255,255,0.1); border-color:rgba(255,255,255,0.22); color:#f6ebd4;">MIT License</span>
+            <span class="badge" style="background:rgba(255,255,255,0.1); border-color:rgba(255,255,255,0.22); color:#a9c8df;">版权人：Celeste</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== Tab 2: 路由工作台 ==================== -->
+    <section id="panel-routing" class="panel" role="tabpanel">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2>v2rayN 路由规则与远端 DoH 工作台</h2>
+            <p>完全复刻仓库内 <code>build_routing.py</code> 的规则生成算法，导出的 JSON 可直接通过 <code>build_routing.py validate</code> 静态校验。</p>
+          </div>
+          <span class="badge badge-ok">与 Python 生成器 100% 对齐</span>
+        </div>
+
+        <div class="chip-row" id="routingPresetChips"></div>
+        <div id="routingModeSummary" class="callout" style="margin-bottom:16px;"></div>
+
+        <div class="grid-2">
+          <div>
+            <div class="code-toolbar">
+              <strong id="routingJsonTitle">规则预览</strong>
+              <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="btn btn-sm btn-primary" id="copyRoutingJsonBtn">复制 JSON</button>
+                <button type="button" class="btn btn-sm" id="downloadRoutingJsonBtn">下载 .json</button>
+              </div>
+            </div>
+            <pre class="code-block" id="routingJsonOutput"></pre>
+            <div class="field-hint" id="routingValidateHint"></div>
+          </div>
+
+          <div>
+            <div class="code-toolbar">
+              <strong>30 项生态置顶域名 &amp; 远端 DoH 清单</strong>
+              <button type="button" class="btn btn-sm" id="copyDohBtn">复制 DoH 清单</button>
+            </div>
+            <div class="chip-row" id="domainCategoryChips"></div>
+            <div class="domain-grid" id="domainGrid"></div>
+            <div class="callout callout-warn" style="margin-top:14px;">
+              <strong>分流模式的工程取舍：</strong>把 <code>cdnjs.cloudflare.com</code>、<code>cdn.jsdelivr.net</code>、<code>sentry.io</code>、<code>stripe.com</code>、<code>segment.com</code>、<code>recaptcha.net</code> 等通用域名置顶走代理后，访问这些公共资源的国内站点可能会略有绕路变慢。若追求最稳单出口且配合断网开关，请改选「全公网 + 生态置顶」并将客户端 <code>domainStrategy</code> 设为 <code>AsIs</code>。
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== Tab 3: 断网与 DNS 规划器 ==================== -->
+    <section id="panel-firewall" class="panel" role="tabpanel">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2>Windows 物理网卡断网开关 &amp; 防路由器 DNS 旁路规划器</h2>
+            <p>内置 <code>build_kill_switch.py</code> 同款 IPv4 补集区间算法与 <code>v0.3.8</code> DHCP 必填防锁死校验，所有计算仅在本地浏览器完成。</p>
+          </div>
+          <span class="badge badge-warn">仅预览命令 · 不自动修改系统</span>
+        </div>
+
+        <div class="form-grid">
+          <div class="field">
+            <label for="ksInterfaces">物理网卡名称（多个用英文逗号分隔）</label>
+            <input type="text" id="ksInterfaces" value="WLAN" placeholder="例如：WLAN, 以太网">
+            <div class="field-hint">在 PowerShell 运行 <code>Get-NetAdapter | Select Name, Status</code> 查看准确名称；新增 USB 网卡或热点需重新安装。</div>
+          </div>
+          <div class="field">
+            <label for="ksUpstreamIp">代理上游服务器 IPv4 地址</label>
+            <input type="text" id="ksUpstreamIp" value="198.51.100.10" placeholder="填写实际代理节点公网 IPv4（示例为文档保留地址）">
+            <div class="field-hint">仅允许单播公网或 RFC 1918 私网 IPv4，拒绝回环/组播/未指定地址。</div>
+          </div>
+          <div class="field">
+            <label for="ksPort">代理上游端口（1–65535）</label>
+            <input type="number" id="ksPort" value="443" min="1" max="65535">
+          </div>
+          <div class="field">
+            <label for="ksProto">传输协议</label>
+            <select id="ksProto">
+              <option value="TCP" selected>TCP</option>
+              <option value="UDP">UDP</option>
+            </select>
+          </div>
+          <div class="field" style="grid-column: 1 / -1;">
+            <label for="ksDhcp">DHCP 服务器私网 IPv4（家用路由器 / 手机热点必填）</label>
+            <input type="text" id="ksDhcp" value="192.168.1.1" placeholder="例如：192.168.1.1（多个用逗号分隔）">
+            <label class="checkbox-row">
+              <input type="checkbox" id="ksUsesDhcp" checked>
+              所选物理网卡通过 DHCP 自动获取 IP（家用 Wi-Fi 与热点默认开启）
+            </label>
+            <div class="field-hint">在 PowerShell 运行 <code>Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=TRUE" | Select Description, DHCPServer</code> 查询。</div>
+          </div>
+        </div>
+
+        <div id="ksAlertBox" style="margin-top:16px;"></div>
+
+        <div class="grid-2" style="margin-top:16px;">
+          <div>
+            <div class="code-toolbar">
+              <strong>计算出的放行地址与 IPv4 阻断补集区间</strong>
+              <span class="badge" id="ksRuleCountBadge">—</span>
+            </div>
+            <pre class="code-block" id="ksPlanOutput"></pre>
+          </div>
+          <div>
+            <div class="code-toolbar">
+              <strong>Windows 断网开关 PowerShell 命令</strong>
+              <button type="button" class="btn btn-sm btn-primary" id="copyKsCmdBtn">复制全部命令</button>
+            </div>
+            <pre class="code-block" id="ksCmdOutput"></pre>
+          </div>
+        </div>
+      </div>
+
+      <div class="card section">
+        <div class="section-head">
+          <div>
+            <h2>物理网卡防路由器 DNS（端口 53）旁路</h2>
+            <p>适用于保留国内直连分流的 Windows，封堵物理网卡直连 <code>10.0.0.0/8</code>、<code>172.16.0.0/12</code>、<code>192.168.0.0/16</code>、<code>100.64.0.0/10</code>、<code>fc00::/7</code>、<code>fe80::/10</code> 的 TCP/UDP 53 端口。</p>
+          </div>
+          <button type="button" class="btn btn-sm" id="copyLanDnsCmdBtn">复制 LAN DNS 命令</button>
+        </div>
+        <div class="callout callout-warn" style="margin-bottom:14px;">
+          <strong>装之前要知道的副作用：</strong>如果系统 DNS 指向家用路由器（绝大多数家庭网络默认如此），装上本规则后<strong>一旦关闭代理客户端或 TUN，所有域名解析都会失败</strong>；公司内网 <code>10.x</code> 等私网 DNS 也会被一并拦截。临时停用代理时，请先用管理员权限运行 <code>-Action Remove</code> 精准卸载这 4 条规则。
+        </div>
+        <pre class="code-block" id="lanDnsCmdOutput"></pre>
+      </div>
+    </section>
+
+    <!-- ==================== Tab 4: 跨端自检清单 ==================== -->
+    <section id="panel-checklist" class="panel" role="tabpanel">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2>跨端隐私环境交互式自检清单</h2>
+            <p>同步自 <code>PRIVACY-CHECKLIST.md</code>，勾选进度仅保存在当前浏览器的 <code>localStorage</code>，随时可导出为脱敏验收记录。</p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button type="button" class="btn btn-sm btn-primary" id="exportCheckMdBtn">导出 Markdown</button>
+            <button type="button" class="btn btn-sm" id="exportCheckJsonBtn">导出 JSON</button>
+            <button type="button" class="btn btn-sm" id="resetCheckBtn">重置勾选</button>
+          </div>
+        </div>
+
+        <div class="progress-wrap">
+          <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+            <strong id="checkProgressText">已完成 0 / 0 项（0%）</strong>
+            <span class="badge badge-ok" id="checkStatusBadge">待开始验收</span>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="checkProgressFill" style="width:0%;"></div>
+          </div>
+        </div>
+
+        <div class="chip-row" id="checkCategoryChips"></div>
+        <div id="checklistContainer"></div>
+      </div>
+    </section>
+
+    <!-- ==================== Tab 5: 干净版实测报告 ==================== -->
+    <section id="panel-report" class="panel" role="tabpanel">
+      <div class="card">
+        <div class="section-head">
+          <div>
+            <h2>干净原创报告精要：跨端边界与独立四层实测</h2>
+            <p>已彻底移除全部第三方原文镜像与微信文章，保留脱敏后的本机独立四层实测数据与可复核出处索引。</p>
+          </div>
+          <a class="btn btn-sm btn-primary" href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/blob/main/docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md" data-local-href="CLIENT-BOUNDARY-AND-LEAK-REPORT.md" target="_blank" rel="noopener">打开完整 Markdown 报告</a>
+        </div>
+
+        <div class="grid-2">
+          <!-- 实测可视化 1: CLI 冷启动归零 -->
+          <div class="card" style="box-shadow:none; margin:0;">
+            <h3 style="margin:0 0 8px; font-size:16.5px;">实测 1：CLI 未登录冷启动归零对照（<code>2.1.330</code>）</h3>
+            <p style="margin:0 0 12px; font-size:13px; color:var(--muted);">完全清空临时目录且不登录状态下运行单次探针，对比默认环境与开启 5 项防后台外联开关后的实际外发与落盘。</p>
+            <div class="metric-compare">
+              <div class="metric-row">
+                <div style="display:flex; justify-content:space-between; font-size:13px;">
+                  <span>默认未登录冷启动 · 外部连接</span><strong>3 次 <code>api.anthropic.com:443</code></strong>
+                </div>
+                <div class="bar-track"><div class="bar-fill-danger" style="width:100%;"></div></div>
+                <div style="display:flex; justify-content:space-between; font-size:13px; margin-top:8px;">
+                  <span>开启 5 项开关后 · 外部连接</span><strong style="color:var(--ok);">0 次（完全归零）</strong>
+                </div>
+                <div class="bar-track"><div class="bar-fill-ok" style="width:2%;"></div></div>
+              </div>
+              <div class="metric-row">
+                <div style="display:flex; justify-content:space-between; font-size:13px;">
+                  <span>默认未登录冷启动 · 本地遥测落盘</span><strong>549 KB（241 条事件）</strong>
+                </div>
+                <div class="bar-track"><div class="bar-fill-danger" style="width:100%;"></div></div>
+                <div style="display:flex; justify-content:space-between; font-size:13px; margin-top:8px;">
+                  <span>开启 5 项开关后 · 本地遥测落盘</span><strong style="color:var(--ok);">0 B（0 条事件）</strong>
+                </div>
+                <div class="bar-track"><div class="bar-fill-ok" style="width:2%;"></div></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 实测可视化 2: Windows 防火墙优先级冲突 -->
+          <div class="card" style="box-shadow:none; margin:0;">
+            <h3 style="margin:0 0 8px; font-size:16.5px;">实测 2：Windows 防火墙规则求值优先级与 MSIX 穿透</h3>
+            <p style="margin:0 0 12px; font-size:13px; color:var(--muted);">离线拆检官方 Windows Desktop MSIX（<code>6.28899.6</code>）清单发现其自带两条全配置 TCP 出站允许规则。</p>
+            <div style="display:grid; gap:9px;">
+              <div class="callout callout-ok">
+                <strong>最高优先级 · 显式 Block 规则</strong><br>
+                <code>Manage-WindowsKillSwitch.ps1</code> 写入的物理网卡显式阻断规则，可压制所有显式 Allow 规则。
+              </div>
+              <div class="callout callout-danger">
+                <strong>中等优先级 · MSIX 自动写入的显式 Allow（穿透风险）</strong><br>
+                <code>AppxManifest.xml</code> 为 <code>Claude.exe</code> 与 <code>cowork-svc.exe</code> 自动放行全网卡 TCP，断 TUN 时会直接穿透默认出站阻止。
+              </div>
+              <div class="callout">
+                <strong>最低优先级 · DefaultOutboundAction = Block</strong><br>
+                仅靠全局默认阻止无法拦住显式 Allow；需借助 <code>Inspect-WindowsFirewall.ps1</code> 定期核查 <code>MsixClaudeOutboundAllowCount</code>。
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 五端边界对照表 -->
+      <div class="card section">
+        <div class="section-head">
+          <div>
+            <h2>五端客户端边界对照矩阵</h2>
+            <p>看清“代理能管的”与“原生 App 本地枚举管不到的”，合理分配各端职责。</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table id="boundaryTable">
+            <thead>
+              <tr>
+                <th>入口类型</th>
+                <th>冷启动外联</th>
+                <th>宿主时区 / 语言</th>
+                <th>本地硬件 / 网卡枚举</th>
+                <th>推荐定位</th>
+              </tr>
+            </thead>
+            <tbody id="boundaryTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 五大常见认知误区 -->
+      <div class="card section">
+        <div class="section-head">
+          <div>
+            <h2>五大常见认知误区 · 点击展开实证纠偏</h2>
+            <p>基于离线静态核验与本机回环实测，剔除社区流传的夸大或失实说法。</p>
+          </div>
+        </div>
+        <div id="mythContainer"></div>
+      </div>
+
+      <!-- 诚实边界声明 -->
+      <div class="callout callout-warn section">
+        <strong>诚实的能力与合规边界声明：</strong>本工具包与研究报告面向网络隐私工程、路由洁净度、防断线泄漏与本地备份可靠性。仅靠网络层配置无法替代服务提供商的地区适用政策与使用条款（按用户实际所在地判定），本项目也不提供任何检测绕过、风控对抗或人机验证绕过方案。所有外部背景来源均仅保留公开链接，见 <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/blob/main/THIRD-PARTY-NOTICES.md" target="_blank" rel="noopener">THIRD-PARTY-NOTICES.md</a>。
+      </div>
+    </section>
+  </main>
+
+  <!-- 悬浮轻量哈基米小助手 -->
+  <div class="hajimi-dock">
+    <div class="hajimi-popover" id="hajimiPopover" role="dialog" aria-label="哈基米避坑小贴士">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:8px;">
+        <div style="display:flex; align-items:center; gap:8px;">
+          <img src="images/hajimi-mascot.svg" alt="" style="width:28px; height:28px; border-radius:8px;">
+          <strong>哈基米 · 当前页小贴士</strong>
+        </div>
+        <button type="button" class="btn btn-sm" id="closeHajimiBtn" aria-label="收起小贴士">收起</button>
+      </div>
+      <p id="hajimiDockMessage" style="margin:0 0 10px; font-size:13.5px;"></p>
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button type="button" class="btn btn-sm btn-primary" id="dockNextTipBtn">下一条贴士</button>
+        <button type="button" class="btn btn-sm" id="dockAboutBtn">看协作署名</button>
+      </div>
+    </div>
+    <button type="button" class="hajimi-fab" id="hajimiFab" aria-expanded="false">
+      <img src="images/hajimi-mascot.svg" alt="">
+      <span>哈基米贴士</span>
+    </button>
+  </div>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <footer class="footer">
+    <div>
+      <strong>跨平台网络隐私与本机环境工具包 v0.4.0</strong> · MIT License · Copyright (c) 2026 Celeste · 协作：哈基米 (Gemini)
+    </div>
+    <div style="display:flex; gap:14px; flex-wrap:wrap;">
+      <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit" target="_blank" rel="noopener">GitHub 首页</a>
+      <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/blob/main/docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md" data-local-href="CLIENT-BOUNDARY-AND-LEAK-REPORT.md" target="_blank" rel="noopener">干净版综合报告</a>
+      <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/blob/main/THIRD-PARTY-NOTICES.md" target="_blank" rel="noopener">第三方声明</a>
+      <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/blob/main/LICENSE" target="_blank" rel="noopener">MIT 许可</a>
+    </div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

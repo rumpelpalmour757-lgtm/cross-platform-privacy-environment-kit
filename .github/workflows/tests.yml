@@ -1,0 +1,31 @@
+# 跑全部单元测试：push 和 pull request 时在 Linux 和 Windows 上自动验证。
+# 工具包要求 Python 3.10+，在 ubuntu-latest 与 windows-latest 上分别测试 Python 3.10 与 3.13。
+name: 测试
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    name: ${{ matrix.os }}，Python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: windows-latest
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 跑全部单元测试
+        run: python -B -m unittest discover -p "test_*.py" -v

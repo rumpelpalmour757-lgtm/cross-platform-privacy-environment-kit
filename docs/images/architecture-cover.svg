@@ -1,0 +1,112 @@
+<svg xmlns="http://www.w3.org/2000/svg" xml:lang="zh-CN" width="1200" height="696" viewBox="0 0 1200 696" fill="none" role="img" aria-labelledby="cover-title cover-desc">
+  <title id="cover-title">跨平台网络隐私与本机环境工具包 v0.4.0：四层防泄漏架构与验收闭环</title>
+  <desc id="cover-desc">左侧展示四层隐私与防泄漏防护体系：第 1 层只读体检与客户端边界识别，第 2 层统一路由与远端加密 DNS（30 项核心与外围生态域、IPv4 置顶、UDP/443 与 IPv6 502 防护），第 3 层物理网卡防旁路与断网开关（含 DHCP 必填校验与 LAN 53 端口封堵），第 4 层加密盘本地快照备份与完整性恢复。右侧展示从检查到验收的五步安全闭环以及明确的能力边界说明。</desc>
+  <defs>
+    <style>
+      text { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", "WenQuanYi Micro Hei", sans-serif; }
+      .ink { fill: #1B2B3D; }
+      .muted { fill: #556474; }
+      .acc { fill: #1D5F8A; }
+      .warn { fill: #B45309; }
+      .head { font-size: 19px; font-weight: 600; }
+      .sub { font-size: 16px; font-weight: 600; }
+      .small { font-size: 13px; }
+      .smallb { font-size: 14px; font-weight: 600; }
+      .num { fill: #FFFFFF; font-size: 14.5px; font-weight: 600; }
+      .card { fill: #FFFEFB; stroke: #DAD5C8; }
+      .row { fill: #F1F6FA; stroke: #D6E4EE; }
+      .row-hi { fill: #E7F2F9; stroke: #7CB5D8; stroke-width: 1.5; }
+      .row-warn { fill: #FDF6EC; stroke: #E9C79B; stroke-width: 1.4; }
+      .line { stroke: #7CB5D8; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; fill: none; }
+    </style>
+  </defs>
+
+  <!-- 外框底板 -->
+  <rect x="1" y="1" width="1198" height="694" rx="18" fill="#F6F4EE" stroke="#E0DCD0"/>
+  <path d="M40 38H74" stroke="#1D5F8A" stroke-width="3.5" stroke-linecap="round"/>
+  <text x="86" y="43.5" class="acc smallb" letter-spacing="1.2">CROSS-PLATFORM PRIVACY ENVIRONMENT KIT · v0.4.0 · MIT</text>
+  <text x="40" y="86" class="ink" font-size="28" font-weight="600">四层防泄漏架构与只读优先闭环</text>
+  <text x="1160" y="83" class="muted" text-anchor="end" font-size="15.5">Windows · macOS · Linux · Android · iOS</text>
+
+  <!-- 左侧：四层防护体系 -->
+  <rect x="40" y="116" width="560" height="544" rx="12" class="card"/>
+  <text x="64" y="152" class="ink head">四层隐私与防泄漏防护</text>
+  <text x="576" y="152" class="muted small" text-anchor="end">所有改动均可预览、可校验、可回滚</text>
+
+  <path d="M62 192V618M57 612L62 618L67 612" class="line"/>
+
+  <!-- Layer 1 -->
+  <rect x="82" y="176" width="494" height="100" rx="9" class="row"/>
+  <circle cx="108" cy="204" r="14" fill="#1F2A44"/>
+  <text x="108" y="209.2" class="num" text-anchor="middle">1</text>
+  <text x="134" y="209" class="ink sub">只读体检与客户端边界识别</text>
+  <text x="134" y="234" class="muted small">Inspect-WindowsProxy / Firewall · inspect_unix_network.py</text>
+  <text x="134" y="256" class="muted small">audit_client_boundary.py：核查时区、CLI 5 项防外联与 MSIX 放行</text>
+
+  <!-- Layer 2 -->
+  <rect x="82" y="290" width="494" height="106" rx="9" class="row-hi"/>
+  <circle cx="108" cy="318" r="14" fill="#1D5F8A"/>
+  <text x="108" y="323.2" class="num" text-anchor="middle">2</text>
+  <text x="134" y="323" class="ink sub">统一路由、远端 DoH 与防分裂模板</text>
+  <text x="134" y="348" class="muted small">build_routing.py · 30 项核心/外围生态域 + 160.79.104.0/21 置顶</text>
+  <text x="134" y="370" class="muted small">阻断 UDP/443 QUIC 与 IPv6 502 前缀；同步提供 Android / iOS 模板</text>
+
+  <!-- Layer 3 -->
+  <rect x="82" y="410" width="494" height="110" rx="9" class="row"/>
+  <circle cx="108" cy="438" r="14" fill="#1D5F8A"/>
+  <text x="108" y="443.2" class="num" text-anchor="middle">3</text>
+  <text x="134" y="443" class="ink sub">物理网卡断网开关与防路由器 DNS 旁路</text>
+  <text x="134" y="468" class="muted small">Manage-WindowsKillSwitch.ps1：IPv4 补集阻断（含 DHCP 必检）</text>
+  <text x="134" y="490" class="muted small">Manage-WindowsLanDnsGuard.ps1：封堵物理网卡私网 53 端口旁路</text>
+
+  <!-- Layer 4 -->
+  <rect x="82" y="534" width="494" height="102" rx="9" class="row"/>
+  <circle cx="108" cy="562" r="14" fill="#1F2A44"/>
+  <text x="108" y="567.2" class="num" text-anchor="middle">4</text>
+  <text x="134" y="567" class="ink sub">加密盘本地快照备份与校验恢复</text>
+  <text x="134" y="592" class="muted small">config_snapshot.py · claude_local_data.py（audit / backup / recover）</text>
+  <text x="134" y="614" class="muted small">拒绝符号链接与网络盘，自动拦截明文密钥，Windows 设私有 ACL</text>
+
+  <!-- 中间虚线连接 -->
+  <path d="M600 390H626" stroke="#7CB5D8" stroke-width="1.8" stroke-dasharray="4 4"/>
+  <path d="M621 385L627 390L621 395" stroke="#7CB5D8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- 右侧：执行闭环与诚实边界 -->
+  <rect x="632" y="116" width="528" height="544" rx="12" class="card"/>
+  <text x="656" y="152" class="ink head">使用闭环与工程底线</text>
+  <text x="1136" y="152" class="acc smallb" text-anchor="end">默认只读 · 零凭据外传</text>
+
+  <!-- 操作 4 步 -->
+  <rect x="656" y="176" width="480" height="232" rx="9" class="row"/>
+  <text x="678" y="205" class="acc smallb">推荐执行顺序</text>
+
+  <circle cx="692" cy="238" r="12" fill="#1F2A44"/>
+  <text x="692" y="243" class="num" text-anchor="middle">1</text>
+  <text x="716" y="243" class="ink smallb">先备份再改网：快照现用配置与本地状态</text>
+
+  <circle cx="692" cy="276" r="12" fill="#1F2A44"/>
+  <text x="692" y="281" class="num" text-anchor="middle">2</text>
+  <text x="716" y="281" class="ink smallb">只读体检：核对代理、防火墙、时区与 CLI 开关</text>
+
+  <circle cx="692" cy="314" r="12" fill="#1D5F8A"/>
+  <text x="692" y="319" class="num" text-anchor="middle">3</text>
+  <text x="716" y="319" class="ink smallb">导入校验后的路由与 DoH，再按需预览防火墙规则</text>
+
+  <circle cx="692" cy="352" r="12" fill="#1D5F8A"/>
+  <text x="692" y="357" class="num" text-anchor="middle">4</text>
+  <text x="716" y="357" class="ink smallb">按自检清单做受控断线演练并保留脱敏记录</text>
+
+  <text x="678" y="392" class="muted small">桌面与移动端均支持离线静态核验，交互工作台见 docs/index.html</text>
+
+  <!-- 明确边界块 -->
+  <rect x="656" y="424" width="480" height="122" rx="9" class="row-warn"/>
+  <text x="678" y="452" class="warn smallb">装之前要知道的副作用与边界</text>
+  <text x="678" y="478" class="ink small">· 断网开关在 DHCP 网卡上必须填写 -DhcpServer，否则续租可能断网</text>
+  <text x="678" y="502" class="ink small">· LAN DNS Guard 关代理/TUN 后会令路由器与内网 10.x DNS 失效</text>
+  <text x="678" y="526" class="ink small">· 仅解决网络与本机卫生问题，不构成地区合规保证，亦不做检测绕过</text>
+
+  <!-- 底部署名栏 -->
+  <rect x="656" y="562" width="480" height="74" rx="9" fill="#1F2A44"/>
+  <text x="678" y="592" fill="#F6EBD4" font-size="15.5" font-weight="600">Celeste × 哈基米 (Gemini) · 开放协作</text>
+  <text x="678" y="617" fill="#A9C8DF" font-size="13.5">100% 原创文档与离线交互台 · 零第三方原文镜像 · MIT License</text>
+</svg>
