@@ -10,8 +10,11 @@
 | 邮件远程图片 | 核对邮件客户端的加载与跟踪保护选项 | 邮件远程资源和点击登录链接是不同的连接。[Proton 跟踪保护](https://proton.me/support/email-tracker-protection) |
 | 路由器 DNS 旁路防护 | Windows 分流模式运行 `Manage-WindowsLanDnsGuard.ps1 -Action Status -IncludeAllPhysicalAdapters` 确认物理网卡端口 53 阻断规则生效 | 防止程序绕过系统 DNS 直查路由器 53 端口；不影响路由器后台管理、DHCP、局域网共享与 TUN 网卡。副作用：关掉代理/TUN 后，DNS 指向路由器或内网私网 DNS 的网络会全部解析失败 |
 | 断网开关 DHCP 例外 | 网卡用 DHCP 时，`Manage-WindowsKillSwitch.ps1` 已带 `-DhcpServer` | 不带时续租被拦、可能突然断网；v0.3.8 起 `Install` 会拒绝安装 |
-| 宿主机与隔离浏览器边界 | 运行 `py -3 .\audit_client_boundary.py` 核对宿主机时区/语言及本地 Claude Desktop/CLI 足迹 | 宿主机原生客户端直接读取系统时区与语言，且桌面端未登录即会发起冷启动外联；不要与独立隔离浏览器环境混用 |
+| 宿主机与隔离浏览器边界 | 运行 `py -3 .\environment_report.py --html-out .\env-health.html` 或 `py -3 .\audit_client_boundary.py` 核对宿主机时区/语言、本地客户端足迹及三态体检摘要 | 宿主机原生客户端直接读取系统时区与语言，且桌面端未登录即会发起冷启动外联；不要与独立隔离浏览器环境混用。导出 HTML 支持离线双击查看与打印存 PDF |
 | CLI 防后台外联开关 | 运行 `py -3 .\audit_client_boundary.py` 查看 `cliAntiTelemetryFlags`（`DISABLE_TELEMETRY=1`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 等 5 项） | 实测未开启时 CLI 冷启动仍会发起 `api.anthropic.com:443` 外联并落盘遥测，开启后可归零 |
+| 本地 MCP 与宿主机桥接自查 | 运行 `py -3 .\environment_report.py --html-out .\env-health.html` 或 `py -3 .\audit_client_boundary.py` 核对 `localMcpBridges` | 本地 MCP 服务运行在宿主机语境下（只读统计配置数量，不输出名称与命令），可能把宿主机系统时钟、时区或本地文件元信息桥接入会话；需要严格隔离时应逐项复核已启用的桥接插件 |
+| 出口 IP 历史信誉盲区 | 核对 `environment_report.py` 三态摘要中的 `exit_ip_reputation`（固定标为 `unknown`） | 离线本机脚本不查询外部 IP 信誉/代理池库（如 Spur、IPQS、MaxMind），也无法核实共享出口是否存在前任「坏邻居」记录；不要把“本地零泄露通过”等同于“出口信誉干净” |
+| 网络层零泄露 ≠ 运行环境无异常 | 若尝试使用独立虚拟机运行桌面客户端，核对图形加速（GPU/WebGL）、TPM 可用性与冷启动频率 | 即使网络边界做到严格 fail-closed 零泄露，无 GPU / 无 TPM 的残缺虚拟机仍可能产生持续 WebGL 拉黑报错、`no_tpm` 降级，以及为适配字体/输入法/剪贴板引入的额外侵入式桥接副作用；短时间反复冷启动也会放大客户端启动遥测 |
 | 移动端原生 App 限制 | 核对 [mobile/README.md](mobile/README.md) 中的 Android 与 iOS 架构差异 | 代理/VPN 仅管网络层；Android 原生 App 可在应用层直接读取设备标识与物理网卡 IPv6，高敏感场景建议固定在电脑端隔离浏览器 |
 | Android VPN 保活与防漏 | `v2rayNG` 已加入电池「不限制后台」、开启「设备启动后自动连接」、系统「始终开启 VPN」与「阻止不使用 VPN 的连接」；改设置后已停止再启动服务 | 网页认证 Wi-Fi 需临时关闭阻断开关；应用分身与主应用共用物理网卡、SIM 与时区，不算独立环境 |
 | 防火墙第三方与 MSIX 放行复核 | 运行 `Inspect-WindowsFirewall.ps1` 查看 `EnabledOutboundAllowBreakdown` 与 `MsixClaudeOutboundAllowCount` | 确认无闲置第三方全地址直连放行，且未残留官方桌面端 MSIX 自动写入的 `Claude.exe`/`cowork-svc.exe` TCP 出站放行规则（该类显式放行会在断 TUN 时穿透默认出站阻断） |

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>跨平台网络隐私与本机环境工具包 v0.4.0 · 交互式展示与配置工作台</title>
+  <title>跨平台网络隐私与本机环境工具包 v0.4.1 · 交互式展示与配置工作台</title>
   <meta name="description" content="覆盖 Windows、macOS、Linux、Android、iOS 的网络隐私体检、路由生成、Windows 断网开关与防 DNS 旁路规划、本地快照备份与干净版跨端实测报告。MIT 开源，Celeste × 哈基米 (Gemini) 协作打造。">
   <link rel="icon" type="image/svg+xml" href="images/logo.svg">
   <link rel="stylesheet" href="styles.css">
@@ -14,7 +14,7 @@
       <div class="brand">
         <img src="images/logo.svg" alt="工具包图标">
         <div>
-          <div class="brand-title">跨平台网络隐私与本机环境工具包 <span class="badge badge-accent">v0.4.0 · MIT</span></div>
+          <div class="brand-title">跨平台网络隐私与本机环境工具包 <span class="badge badge-accent">v0.4.1 · MIT</span></div>
           <div class="brand-sub">Celeste × 哈基米 (Gemini) · 离线零联网交互工作台</div>
         </div>
       </div>
@@ -60,7 +60,7 @@
             <div class="stat-label">与 <code>build_routing.py</code> 严格同步</div>
           </div>
           <div class="stat-box">
-            <div class="stat-val">128 项测试</div>
+            <div class="stat-val">136 项测试</div>
             <div class="stat-label">Windows + Linux 离线单元测试覆盖</div>
           </div>
           <div class="stat-box">
@@ -104,7 +104,7 @@
           <h2 class="hajimi-title">Celeste × 哈基米 (Gemini) · 开放协作打造</h2>
           <p class="hajimi-desc">
             本项目由作者 <strong>Celeste</strong>（<code>rumpelpalmour757-lgtm</code>）主导需求、架构决策与安全边界把关；
-            公开开源版 <code>v0.4.0</code> 的 MIT 合规整理、第三方镜像清理与干净原创综合报告撰写、矢量视觉资产及这套零依赖离线交互工作台，由 <strong>哈基米（Gemini）</strong> 协作完成（前期脚本与单元测试亦得益于 Codex / Claude 的辅助验证）。
+            公开开源版 <code>v0.4.0–v0.4.1</code> 的 MIT 合规整理、第三方镜像清理与干净原创综合报告、三态离线 HTML 体检单、矢量视觉资产及这套零依赖离线交互工作台，由 <strong>哈基米（Gemini）</strong> 协作完成（前期脚本与单元测试亦得益于 Codex / Claude 的辅助验证）。
           </p>
           <div class="hajimi-tip-box" id="hajimiTipBox"></div>
           <div class="hajimi-meta">
@@ -329,6 +329,31 @@
         </div>
       </div>
 
+      <!-- 三态核验模型与工程边界权衡（v0.4.1） -->
+      <div class="card section">
+        <div class="section-head">
+          <div>
+            <h2>三态体检模型与「网络零泄露 ≠ 环境无异常」工程对照</h2>
+            <p><code>v0.4.1</code> 起统一体检脚本 <code>environment_report.py --html-out</code> 显式区分 <strong>已通过 / 存在缺口 / 未知盲区</strong>，避免把没测到的项目默认当成安全。</p>
+          </div>
+          <span class="badge badge-accent">v0.4.1 增补</span>
+        </div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:12px;">
+          <div class="callout callout-ok">
+            <strong>1. 本地 MCP / 宿主机桥接自查</strong><br>
+            宿主机上的 MCP 工具桥（如读本机时钟、文件或剪贴板）天然在宿主机语境下运行。<code>environment_report.py</code> 现已自动合并 <code>audit_client_boundary.py</code>，只读统计 Desktop/CLI 本地 MCP 配置数量（不输出名称与命令）并在存在时标为缺口提醒复核。
+          </div>
+          <div class="callout callout-warn">
+            <strong>2. 出口 IP 历史信誉固定标为 <code>unknown</code></strong><br>
+            离线本地脚本从不查询 Spur、IPQS、MaxMind 等外部代理库，也不读取实时公网出口历史。体检单强制将 <code>exit_ip_reputation</code> 标为未知盲区，杜绝把“本地零泄露通过”等同于“共享出口无坏邻居历史”。
+          </div>
+          <div class="callout callout-danger">
+            <strong>3. 网络层零泄露 ≠ 虚拟化/运行态无异常</strong><br>
+            无 GPU 硬件加速与无 TPM 的残缺虚拟机运行桌面客户端时，即便网络层严格 fail-closed，仍可能出现持续 WebGL 拉黑报错、<code>no_tpm</code> 降级、频繁冷启动遥测放大，以及为适配字体/输入法注入桥接带来的新副作用。
+          </div>
+        </div>
+      </div>
+
       <!-- 五端边界对照表 -->
       <div class="card section">
         <div class="section-head">
@@ -353,11 +378,11 @@
         </div>
       </div>
 
-      <!-- 五大常见认知误区 -->
+      <!-- 六大常见认知误区 -->
       <div class="card section">
         <div class="section-head">
           <div>
-            <h2>五大常见认知误区 · 点击展开实证纠偏</h2>
+            <h2>六大常见认知误区 · 点击展开实证纠偏</h2>
             <p>基于离线静态核验与本机回环实测，剔除社区流传的夸大或失实说法。</p>
           </div>
         </div>
@@ -397,7 +422,7 @@
 
   <footer class="footer">
     <div>
-      <strong>跨平台网络隐私与本机环境工具包 v0.4.0</strong> · MIT License · Copyright (c) 2026 Celeste · 协作：哈基米 (Gemini)
+      <strong>跨平台网络隐私与本机环境工具包 v0.4.1</strong> · MIT License · Copyright (c) 2026 Celeste · 协作：哈基米 (Gemini)
     </div>
     <div style="display:flex; gap:14px; flex-wrap:wrap;">
       <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit" target="_blank" rel="noopener">GitHub 首页</a>

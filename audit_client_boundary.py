@@ -86,50 +86,88 @@ def _has_msix_claude(local_appdata):
         return False
 
 
-def _read_cli_settings_env(cli_dir):
-    settings_path = Path(cli_dir) / "settings.json"
+def _read_json_file_bounded(file_path, max_bytes=1024 * 1024):
     try:
-        info = os.lstat(settings_path)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
-            return {}
-        raw = settings_path.read_text(encoding="utf-8-sig")
-        data = json.loads(raw)
-        if isinstance(data, dict) and isinstance(data.get("env"), dict):
-            return {str(k): str(v) for k, v in data["env"].items() if v is not None}
+        info = os.lstat(file_path)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
+            return None
+        raw = Path(file_path).read_text(encoding="utf-8-sig")
+        return json.loads(raw)
     except (OSError, UnicodeError, ValueError):
-        pass
+        return None
+
+
+def _read_cli_settings_env(cli_dir):
+    data = _read_json_file_bounded(Path(cli_dir) / "settings.json")
+    if isinstance(data, dict) and isinstance(data.get("env"), dict):
+        return {str(key): str(val) for key, val in data["env"].items() if val is not None}
     return {}
+
+
+def _count_mcp_servers(file_path):
+    data = _read_json_file_bounded(file_path)
+    if not isinstance(data, dict):
+        return 0
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return 0
+    return len(servers)
 
 
 def _flag_enabled(value):
     return str(value or "").strip().lower() in ("1", "true", "yes")
 
 
-def collect_boundary_audit(system=None, home=None, env=None, now_local=None):
+def collect_boundary_audit(system=None, home=None, env=None, now_local=None, config_dir=None):
     sys_name = system or platform.system()
     env_map = os.environ if env is None else env
     home_dir = Path(home) if home is not None else Path.home()
     local_time = now_local or datetime.now().astimezone()
 
     config_override = (env_map.get("CLAUDE_CONFIG_DIR") or "").strip()
-    cli_dir = Path(config_override) if config_override else (home_dir / ".claude")
+    if config_dir is not None:
+        cli_dir = Path(config_dir)
+    elif config_override:
+        cli_dir = Path(config_override)
+    else:
+        cli_dir = home_dir / ".claude"
     cli_json = home_dir / ".claude.json"
     settings_env = _read_cli_settings_env(cli_dir)
 
     desktop_appdata_present = False
     desktop_msix_present = False
+    desktop_config_dir = None
     if sys_name == "Windows":
         appdata = (env_map.get("APPDATA") or "").strip()
         local_appdata = (env_map.get("LOCALAPPDATA") or "").strip()
         if appdata:
-            desktop_appdata_present = _safe_exists(Path(appdata) / "Claude")
+            desktop_config_dir = Path(appdata) / "Claude"
+            desktop_appdata_present = _safe_exists(desktop_config_dir)
         desktop_msix_present = _has_msix_claude(local_appdata)
     elif sys_name == "Darwin":
-        desktop_appdata_present = _safe_exists(home_dir / "Library" / "Application Support" / "Claude")
+        desktop_config_dir = home_dir / "Library" / "Application Support" / "Claude"
+        desktop_appdata_present = _safe_exists(desktop_config_dir)
     elif sys_name == "Linux":
         xdg_config = (env_map.get("XDG_CONFIG_HOME") or "").strip()
         base = Path(xdg_config) if xdg_config else (home_dir / ".config")
-        desktop_appdata_present = _safe_exists(base / "Claude")
+        desktop_config_dir = base / "Claude"
+        desktop_appdata_present = _safe_exists(desktop_config_dir)
+
+    desktop_mcp_count = (
+        _count_mcp_servers(desktop_config_dir / "claude_desktop_config.json")
+        if desktop_config_dir is not None
+        else 0
+    )
+    cli_mcp_count = (
+        _count_mcp_servers(cli_dir / "settings.json")
+        + _count_mcp_servers(cli_json)
+    )
+    local_mcp_bridges = {
+        "claudeDesktopMcpConfigured": desktop_mcp_count > 0,
+        "claudeDesktopMcpServerCount": desktop_mcp_count,
+        "claudeCliMcpConfigured": cli_mcp_count > 0,
+        "claudeCliMcpServerCount": cli_mcp_count,
+    }
 
     env_flags = {
         "ANTHROPIC_BASE_URL_set": bool(
@@ -174,6 +212,12 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None):
             "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1) are not both enabled; cold-start CLI runs "
             "may still contact api.anthropic.com:443 even when logged out or using a custom base URL."
         )
+    if desktop_mcp_count > 0 or cli_mcp_count > 0:
+        warnings.append(
+            "Local MCP / host-tool bridge configuration detected. Local MCP servers run in the host OS "
+            "context and may expose host clock, timezone, or local filesystem metadata into sessions; "
+            "review enabled bridges when strict host isolation is required."
+        )
 
     return {
         "schemaVersion": 1,
@@ -192,6 +236,7 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None):
         },
         "environmentVariableFlags": env_flags,
         "cliAntiTelemetryFlags": cli_anti_telemetry,
+        "localMcpBridges": local_mcp_bridges,
         "boundaryNotes": warnings or [
             "No native Claude Desktop or CLI data footprints were observed in default host locations."
         ],
@@ -200,8 +245,9 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args(argv)
-    result = collect_boundary_audit()
+    parser.add_argument("--config-dir", type=Path, help="Override the Claude CLI configuration directory.")
+    args = parser.parse_args(argv)
+    result = collect_boundary_audit(config_dir=args.config_dir)
     print(json.dumps(result, indent=2, ensure_ascii=True))
     return 0
 

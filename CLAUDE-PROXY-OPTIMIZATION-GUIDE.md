@@ -1,17 +1,18 @@
 # 跨端代理环境优化与实测边界对照指南
 
-本指南将原创综合报告 [docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md](docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md) 中的跨端网络边界与独立四层实测观察，逐一映射为 `v0.4.0` 工具包中可落地、可校验、可回滚的防护配置。
+本指南将原创综合报告 [docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md](docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md) 中的跨端网络边界与独立四层实测观察，逐一映射为 `v0.4.1` 工具包中可落地、可校验、可回滚的防护配置。
 
 > 阅读与交互入口：完整干净版 Markdown 报告见 [docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md](docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md)；也可以直接双击打开零依赖离线交互工作台 [docs/index.html](docs/index.html) 浏览可视化对比与实时生成配置。
 
 ## 一、核心发现到工具包能力的逐项映射
 
-| 研究报告观察点 | 潜在风险 | 工具包 v0.4.0 落地工具与规则 |
+| 研究报告观察点 | 潜在风险 | 工具包 v0.4.1 落地工具与规则 |
 | --- | --- | --- |
 | **核心与外围生态分裂出口**<br>遥测、风控、验证、支付、客服、Artifact 预览 CDN 与核验流量跨越 30 个域名（含 `datadoghq-browser-agent.com`、`hexagon-analytics.com`、`segment.com`、`statsigapi.net`、`claude.site`、`cdnjs.cloudflare.com`、`cdn.jsdelivr.net`）与官方 IPv4 网段 `160.79.104.0/21`（AS399358） | 仅将主域名走代理时，Sentry / Datadog RUM / Sift / Segment / Statsig / GrowthBook / Artifact CDN / Stripe / hCaptcha / Persona 等请求可能走直连或境内 DNS，形成双出口分裂 | 使用 [routing-claude-ecosystem.json](routing-claude-ecosystem.json)（分流模式）或 [routing-claude-global.json](routing-claude-global.json)（全局模式，配断网开关）；也可用 `build_routing.py generate ... --claude-ecosystem` 生成并校验；远程 DoH 域名清单见 [claude-doh-domains.txt](claude-doh-domains.txt) |
 | **Anthropic IPv6 引发 502**<br>`2607:6bc0::/48`、`2607:6bc0:11::/48` 在单 IPv4 出口节点上高频返回 502；UDP/443（QUIC）易出现非预期传输路径 | 会话频繁中断、重试或触发异常连接模式 | 上述两套路由模板均置顶阻断 `udp/443` 及 `2607:6bc0::/48`、`2607:6bc0:11::/48` |
 | **更换路由器/热点后的物理网卡 DNS 旁路**<br>固定写死旧网关 IP 的规则在切换路由器后失效，绕过系统 DNS 直连局域网 53 端口的程序会泄露域名解析 | 分流模式下仍存在物理网卡明文 DNS 查询旁路风险 | 使用原生 PowerShell 脚本 [Manage-WindowsLanDnsGuard.ps1](Manage-WindowsLanDnsGuard.ps1)（支持 `Preview`/`Install`/`Status`/`Remove`），在所有物理网卡上封堵去往 `10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`、`fc00::/7`、`fe80::/10` 的 TCP/UDP 53，不影响路由后台、DHCP 与 TUN 网卡 |
 | **宿主机 vs 隔离浏览器边界与 MSIX 防火墙放行风险**<br>Windows/macOS 宿主机时区、语言与本地 Claude Desktop / CLI 独立于浏览器配置；此外新版官方 Windows Desktop MSIX（如 `6.28899.6`）在 `AppxManifest.xml` 中自带 `Claude.exe` 与 `cowork-svc.exe` 的全配置 TCP 出站「允许」规则 | 宿主机原生客户端与隔离浏览器混用会引入不一致的时区/locale；MSIX 显式 Allow 规则优先级高于 `DefaultOutboundAction=Block`，断 TUN 时会直接穿透防漏网出网 | 运行只读脱敏脚本 `py -3 .\audit_client_boundary.py` 核查本机边界；优先用隔离浏览器 + 已开启防外联开关的独立 CLI；若确需安装官方桌面端，安装后立即禁用/删除其 MSIX 出站放行规则 |
+| **本地 MCP 桥接跨界、出口信誉盲区与运行环境异常**<br>宿主机 MCP 工具桥（如读本机时钟/文件）可能把宿主机元信息带入隔离会话；无 GPU/无 TPM 的虚拟机运行桌面端会产生持续 WebGL 报错与 `no_tpm` 降级；离线脚本无法替代出口 IP 历史信誉核查 | **网络层零泄露不等于运行环境无异常**，也不能自动证明出口 IP 历史信誉干净 | 运行 `py -3 .\environment_report.py --html-out .\env-health.html` 导出三态离线体检单（自动合并 `audit_client_boundary.py` 与 `localMcpBridges` 数量盘点），正视固定标为 `unknown` 的外部盲区，按需排查本地 MCP 与出口质量 |
 | **Android 端规则修正与原生 App 边界**<br>旧规则常将 `claudemcpcontent.com` 误拼为 `claudemcpclient.com`；更重要的是 Android 原生 App 可在应用层直接读取 `ANDROID_ID`、经 `NetworkInterface` 枚举物理网卡公网 IPv6、读取 SIM MCC/MNC 与 Play Integrity | 代理/VPN 只能保障网络层路由与 DNS，无法拦截 Android 应用层的本地硬件/接口枚举 | 手机端 `v2rayNG` 导入 [mobile/android-v2rayng-claude-routing.json](mobile/android-v2rayng-claude-routing.json)（或扫 [mobile/android-v2rayng-claude-routing-qr.png](mobile/android-v2rayng-claude-routing-qr.png)），配合 `mobile/validate_android_v2rayng.py` 校验；并开启系统「始终开启 VPN」「阻止未使用 VPN 的连接」与 DoH；高敏感场景优先固定在电脑端隔离浏览器 |
 | **邮件远程图片与防火墙第三方直连放行**<br>通知邮件中的远程 1x1 像素图片、以及宿主机防火墙上残留的第三方全地址直连放行规则 | 日常邮件客户端直连拉取追踪图片，或非预期软件绕过防火墙默认阻断 | 邮件客户端关闭「自动加载远程图片」；运行 `Inspect-WindowsFirewall.ps1` 核查 `EnabledOutboundAllowBreakdown` 与 `LanDnsPort53OutboundBlockCount`，按需在本地复核非系统第三方放行项 |
 
@@ -19,10 +20,10 @@
 
 1. **先只读体检**：
    ```powershell
-   py -3 .\environment_report.py
-   py -3 .\audit_client_boundary.py
+   py -3 .\environment_report.py --html-out .\env-health.html
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Inspect-WindowsFirewall.ps1
    ```
+   （`environment_report.py` 已内置合并 `audit_client_boundary.py`、三态摘要与可打印离线 HTML 体检单，也可单独运行 `py -3 .\audit_client_boundary.py`。）
 2. **桌面端备份并升级路由与远端加密 DNS**：
    - 先用 `config_snapshot.py backup` 备份现有配置目录；
    - 分流用户导入 [routing-claude-ecosystem.json](routing-claude-ecosystem.json)；启用全局断网开关的用户导入 [routing-claude-global.json](routing-claude-global.json)；

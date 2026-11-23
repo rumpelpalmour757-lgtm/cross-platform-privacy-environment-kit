@@ -22,6 +22,10 @@ class ClientBoundaryAuditTests(unittest.TestCase):
         self.assertFalse(report["localClientFootprints"]["claudeDesktopDataPresent"])
         self.assertFalse(report["localClientFootprints"]["claudeDesktopMsixPresent"])
         self.assertFalse(report["environmentVariableFlags"]["ANTHROPIC_BASE_URL_set"])
+        self.assertFalse(report["localMcpBridges"]["claudeDesktopMcpConfigured"])
+        self.assertEqual(report["localMcpBridges"]["claudeDesktopMcpServerCount"], 0)
+        self.assertFalse(report["localMcpBridges"]["claudeCliMcpConfigured"])
+        self.assertEqual(report["localMcpBridges"]["claudeCliMcpServerCount"], 0)
 
     def test_detects_cli_desktop_msix_and_redacts_env_values(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -85,6 +89,50 @@ class ClientBoundaryAuditTests(unittest.TestCase):
         self.assertTrue(report["environmentVariableFlags"]["ANTHROPIC_BASE_URL_set"])
         self.assertTrue(all(report["cliAntiTelemetryFlags"].values()))
         self.assertFalse(any("DISABLE_TELEMETRY=1" in note for note in report["boundaryNotes"]))
+
+    def test_counts_local_mcp_bridges_without_leaking_server_names_or_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            roaming = root / "Roaming"
+            desktop_dir = roaming / "Claude"
+            desktop_dir.mkdir(parents=True)
+            custom_cli = root / "custom-cli"
+            custom_cli.mkdir()
+            secret_server = "private_clock_bridge_secret"
+            secret_cmd = "C:/secret/host-clock-tool.exe"
+            (desktop_dir / "claude_desktop_config.json").write_text(
+                json.dumps({
+                    "mcpServers": {
+                        secret_server: {"command": secret_cmd, "args": ["--tz"]},
+                    }
+                }),
+                encoding="utf-8",
+            )
+            (custom_cli / "settings.json").write_text(
+                json.dumps({
+                    "mcpServers": {
+                        "cli_secret_bridge_a": {"command": "python", "args": ["a.py"]},
+                        "cli_secret_bridge_b": {"url": "http://127.0.0.1:9999/sse"},
+                    }
+                }),
+                encoding="utf-8",
+            )
+            report = boundary.collect_boundary_audit(
+                system="Windows",
+                home=root,
+                env={"APPDATA": str(roaming), "LOCALAPPDATA": str(root / "Local")},
+                config_dir=custom_cli,
+            )
+        serialized = json.dumps(report)
+        self.assertNotIn(secret_server, serialized)
+        self.assertNotIn(secret_cmd, serialized)
+        self.assertNotIn("cli_secret_bridge_a", serialized)
+        self.assertNotIn("9999", serialized)
+        self.assertTrue(report["localMcpBridges"]["claudeDesktopMcpConfigured"])
+        self.assertEqual(report["localMcpBridges"]["claudeDesktopMcpServerCount"], 1)
+        self.assertTrue(report["localMcpBridges"]["claudeCliMcpConfigured"])
+        self.assertEqual(report["localMcpBridges"]["claudeCliMcpServerCount"], 2)
+        self.assertTrue(any("Local MCP" in note for note in report["boundaryNotes"]))
 
 
 if __name__ == "__main__":

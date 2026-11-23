@@ -26,9 +26,9 @@
 
 <p align="center">
   <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/stargazers"><img alt="Stars" src="https://img.shields.io/github/stars/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit?style=flat-square&color=1D5F8A&logo=github&logoColor=white&label=Stars"></a>
-  <a href="CHANGELOG.md"><img alt="版本 v0.4.0" src="https://img.shields.io/badge/%E7%89%88%E6%9C%AC-v0.4.0-1F2A44?style=flat-square"></a>
+  <a href="CHANGELOG.md"><img alt="版本 v0.4.1" src="https://img.shields.io/badge/%E7%89%88%E6%9C%AC-v0.4.1-1F2A44?style=flat-square"></a>
   <a href="claude-doh-domains.txt"><img alt="生态置顶域名 30 个" src="https://img.shields.io/badge/%E7%94%9F%E6%80%81%E5%9F%9F%E5%90%8D-30%20%E4%B8%AA-1F2A44?style=flat-square"></a>
-  <a href="#验证到哪一步"><img alt="离线单测 128 项" src="https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-128%20%E9%A1%B9-1F2A44?style=flat-square"></a>
+  <a href="#验证到哪一步"><img alt="离线单测 136 项" src="https://img.shields.io/badge/%E6%B5%8B%E8%AF%95-136%20%E9%A1%B9-1F2A44?style=flat-square"></a>
   <img alt="需要 Python 3.10+" src="https://img.shields.io/badge/Python-3.10%2B-1F2A44?style=flat-square">
   <a href="LICENSE"><img alt="许可 MIT" src="https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF-MIT-1F2A44?style=flat-square"></a>
   <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/actions/workflows/tests.yml"><img alt="GitHub Actions 测试状态" src="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/actions/workflows/tests.yml/badge.svg"></a>
@@ -36,7 +36,7 @@
 
 <p align="center">
   <a href="https://rumpelpalmour757-lgtm.github.io/cross-platform-privacy-environment-kit/"><img alt="打开交互式工作台（GitHub Pages）" src="https://img.shields.io/badge/%E6%89%93%E5%BC%80%E4%BA%A4%E4%BA%92%E5%B7%A5%E4%BD%9C%E5%8F%B0-1D5F8A?style=for-the-badge"></a>
-  <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/releases/tag/v0.4.0"><img alt="下载发布包（v0.4.0）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E5%8F%91%E5%B8%83%E5%8C%85-1F2A44?style=for-the-badge"></a>
+  <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit/releases/tag/v0.4.1"><img alt="下载发布包（v0.4.1）" src="https://img.shields.io/badge/%E4%B8%8B%E8%BD%BD%E5%8F%91%E5%B8%83%E5%8C%85-1F2A44?style=for-the-badge"></a>
   <a href="docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md"><img alt="干净版综合报告" src="https://img.shields.io/badge/%E5%B9%B2%E5%87%80%E7%89%88%E7%BB%BC%E5%90%88%E6%8A%A5%E5%91%8A-1F2A44?style=for-the-badge"></a>
 </p>
 
@@ -66,7 +66,7 @@
       2. <b>路由工作台</b>：与 <code>build_routing.py</code> 同源的 5 套预设（默认/全局/生态置顶/外部优先），实时预览、复制或下载路由 JSON 与 30 域加密 DNS 清单。<br>
       3. <b>Windows 防火墙规划器</b>：与 <code>build_kill_switch.py</code> 同源的 IPv4 补集区间计算、DHCP 漏填预警、LAN DNS 旁路防护命令生成与副作用提示。<br>
       4. <b>跨端隐私自检清单</b>：可勾选并自动保存在本地浏览器 <code>localStorage</code>，支持一键导出 Markdown / JSON 验收记录。<br>
-      5. <b>干净版报告浏览器</b>：可视化对照 CLI 冷启动归零实测、39 目标路由对账、五端边界矩阵与五大常见误区纠偏卡片；右下角随时可展开「哈基米贴士」。
+      5. <b>干净版报告浏览器</b>：可视化对照 CLI 冷启动归零实测、39 目标路由对账、三态体检与工程权衡卡片、五端边界矩阵与六大常见误区纠偏卡片；右下角随时可展开「哈基米贴士」。
     </td>
   </tr>
 </table>
@@ -79,7 +79,7 @@
 | :--- | :--- |
 | **在线 / 离线交互 UI** | 打开 [GitHub Pages 工作台](https://rumpelpalmour757-lgtm.github.io/cross-platform-privacy-environment-kit/) 或本地 [docs/index.html](docs/index.html) 生成配置与自检。 |
 | **Windows** | 先看 [CLAUDE-PROXY-OPTIMIZATION-GUIDE.md](CLAUDE-PROXY-OPTIMIZATION-GUIDE.md) 与下方的只读体检、路由和防火墙命令；严格断网开关见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md)。 |
-| **macOS / Linux** | 运行 `python3 inspect_unix_network.py` 只读查看默认路由、DNS 与 IPv6，并按 [PRIVACY-CHECKLIST.md](PRIVACY-CHECKLIST.md) 核查边界。 |
+| **macOS / Linux** | 运行 `python3 environment_report.py --html-out ./env-health.html` 导出三态脱敏体检报告（内置客户端边界与本地 MCP 盘点），并按 [PRIVACY-CHECKLIST.md](PRIVACY-CHECKLIST.md) 核查边界。 |
 | **Android** | 见 [mobile/README.md](mobile/README.md)，通过 13 条规则 JSON 或配套离线二维码导入 `v2rayNG`，并核对电池保活与原生 App 边界。 |
 | **iPhone / iPad** | 见 [mobile/README.md](mobile/README.md)，导入已开启 IPv6 隧道接管的 Shadowrocket 模板并验收。 |
 | **深度实测与边界** | 阅读干净原创综合报告 [docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md](docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md)。 |
@@ -89,12 +89,13 @@
 #### 1. 只读体检与客户端边界核查
 
 ```powershell
+py -3 .\environment_report.py --html-out .\env-health.html
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Inspect-WindowsProxy.ps1
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Inspect-WindowsFirewall.ps1
 py -3 .\audit_client_boundary.py
 ```
 
-输出自动遮盖个人用户名、自定义网卡名与启动项敏感路径；同时核查 CLI 的 5 项防后台外联开关与是否存在 MSIX 自动写入的显式防火墙放行规则。
+`environment_report.py` 已内置合并 `audit_client_boundary.py`，输出三态安全摘要（**已通过 / 存在缺口 / 未知盲区 `unknown`**）与可离线双击浏览/打印存 PDF 的 HTML 体检单；自动遮盖个人用户名、自定义网卡名与本地 MCP 命令，并核查 CLI 5 项防后台外联开关、本地 MCP 桥接数量及 MSIX 自动防火墙放行规则。
 
 #### 2. 跨端路由规则生成与静态校验
 
@@ -152,7 +153,7 @@ py -3 .\claude_local_data.py verify "生成的快照目录"
 1. **研究方法与能力边界**：严格区分「本机独立实测验证」与「社区公开研究背景」，拒绝夸大网络工具的边界。
 2. **五端客户端网络边界矩阵**：逐端梳理独立隔离浏览器、官方 CLI、官方 Windows MSIX Desktop、独立科研桌面端与 Android 原生 App 能管什么、管不了什么。
 3. **四层无侵入本机实测实证（已彻底脱敏）**：包括 CLI `2.1.330` 未登录冷启动从 **3 次外联 + 549 KB（241 条事件）** 降为 **0** 的对照验证、Desktop `6.28899.6` MSIX 自动写入 Windows 防火墙显式 `Allow` 规则的冲突实证，以及 39 个生态目标的分流与 DoH 全量对账。
-4. **五大常见误区纠偏**：拆解“CLI/Desktop 自动跨进程互扫”“全量改字体/UA 凑检测页低分”“手机代理能拦住本地硬件与网卡枚举”“应用分身等于独立隔离环境”“IPv4 单出口忽略 Anthropic IPv6 导致 502”等常见误解。
+4. **六大常见误区与工程权衡**：除拆解硬件序列号、中转地址外联、单页指纹打分与跨进程互扫等常见误解外，`v0.4.1` 增补「网络层零泄露 ≠ 运行态/虚拟化环境无异常」、本地 MCP 宿主机桥接跨界与出口 IP 历史信誉盲区（`unknown`）的工程对照。
 5. **工具包落地映射与操作副作用**：把每条实证直接落到本仓库的对应脚本与参数，并如实写明每一项副作用。
 6. **干净的外部参考索引**：不夹带任何第三方原文，全部公开链接集中收录在 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 
@@ -168,7 +169,7 @@ py -3 .\claude_local_data.py verify "生成的快照目录"
 | [Manage-WindowsLanDnsGuard.ps1](Manage-WindowsLanDnsGuard.ps1) · [build_lan_dns_guard.py](build_lan_dns_guard.py) | Windows 物理网卡防路由器 53 端口旁路脚本与对照规划器 |
 | [Manage-WindowsKillSwitch.ps1](Manage-WindowsKillSwitch.ps1) · [build_kill_switch.py](build_kill_switch.py) · [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) | Windows 严格断网开关（含 DHCP 防误锁与 `.wfw` 备份校验）及说明 |
 | [Inspect-WindowsProxy.ps1](Inspect-WindowsProxy.ps1) · [Inspect-WindowsFirewall.ps1](Inspect-WindowsFirewall.ps1) · [Test-ProxyState.ps1](Test-ProxyState.ps1) | Windows 只读代理/防火墙体检、MSIX 放行规则告警与真实 TUN 校验 |
-| [audit_client_boundary.py](audit_client_boundary.py) · [inspect_unix_network.py](inspect_unix_network.py) · `environment_report.py` | 跨平台客户端边界只读审计、macOS/Linux 网络检查与脱敏环境报告 |
+| [environment_report.py](environment_report.py) · [audit_client_boundary.py](audit_client_boundary.py) · [inspect_unix_network.py](inspect_unix_network.py) | 统一三态环境体检与离线可打印 HTML 体检单导出、本地 MCP 桥接盘点与跨平台只读网络审计 |
 | [config_snapshot.py](config_snapshot.py) · [claude_local_data.py](claude_local_data.py) · [refresh_allowlists.py](refresh_allowlists.py) | 私有权限配置快照备份/还原（防符号链接与明文密钥泄漏）与上游直连名单预览 |
 | [mobile/README.md](mobile/README.md) · `mobile/` | Android `v2rayNG` 13 条规则、离线二维码、静态校验器与 iOS Shadowrocket 模板 |
 | [CHANGELOG.md](CHANGELOG.md) · [LICENSE](LICENSE) · [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) · [AUTO-UPDATE.md](AUTO-UPDATE.md) | 版本记录、MIT 许可、第三方参考声明与每周本地自动同步安全闸门说明 |
@@ -179,7 +180,7 @@ py -3 .\claude_local_data.py verify "生成的快照目录"
 
 ### 做过的
 
-- **跨平台离线单元测试（128 项）**：在 Windows Python 3.13 与 Linux（WSL Ubuntu）Python 3 下运行全套 `test_*.py`，覆盖路由生成与校验、Windows 断网开关与 LAN DNS 规划器、配置快照安全边界、Android/iOS 规则静态校验、MIT 与零镜像回归检查、全仓 Markdown 相对链接检查，以及通过 Node.js 对 `docs/app.js` 与 Python `build_routing.py` / `build_kill_switch.py` 的算法一致性交叉对账（平台专属用例按运行环境显式跳过）。
+- **跨平台离线单元测试（136 项）**：在 Windows Python 3.13 与 Linux（WSL Ubuntu）Python 3 下运行全套 `test_*.py`，覆盖统一三态体检与可打印 HTML 渲染/转义、本地 MCP 桥接脱敏盘点、路由生成与校验、Windows 断网开关与 LAN DNS 规划器、配置快照安全边界、Android/iOS 规则静态校验、MIT 与零镜像回归检查、全仓 Markdown 相对链接检查，以及通过 Node.js 对 `docs/app.js` 与 Python `build_routing.py` / `build_kill_switch.py` 的算法一致性交叉对账（平台专属用例按运行环境显式跳过）。
 - **PowerShell 语法与逻辑核验**：所有 `.ps1` 脚本经解析与逻辑核查，确认 DHCP 漏填拦截与 PowerShell 5.1 严格模式空数组分支已修复；断网开关补集输出与 Python 规划器一致。
 - **本机四层无侵入实测与可视化核验**：在隔离临时目录下完成 CLI `2.1.330` 冷启动归零对照、MSIX 安装包离线静态拆检与 39 目标路由分流对账；并用无头浏览器实拍核验了 `docs/index.html` 明暗主题与矢量图的渲染排版。
 - **公开前隐私与历史核查**：公开前重建单提交干净历史，确认仓库工作区与 Git 历史中均无本机用户名路径、个人代理节点链接、第三方原文镜像或微信转发原文。
@@ -193,7 +194,7 @@ py -3 .\claude_local_data.py verify "生成的快照目录"
 
 ## 离线自检命令
 
-在仓库根目录执行以下命令即可离线复核全部 128 项测试（包含 UI 算法与文档链接回归检查）：
+在仓库根目录执行以下命令即可离线复核全部 136 项测试（包含 UI 算法与文档链接回归检查）：
 
 ```bash
 python -B -m unittest discover -p "test_*.py" -v
@@ -206,5 +207,5 @@ python -B -m unittest discover -p "test_*.py" -v
 - **许可协议**：本仓库按 **MIT License** 开源发布，版权人 **Celeste**，全文见 [LICENSE](LICENSE)。外部背景链接与许可边界见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
 - **作者与协作**：
   - 作者：**Celeste**（GitHub：[rumpelpalmour757-lgtm](https://github.com/rumpelpalmour757-lgtm)）
-  - 协作开发与公开版重构：**哈基米（Gemini）** 与 AI 助手参与完成了 `v0.4.0` 的 MIT 公开化整理、干净版原创综合报告归纳、零依赖离线交互工作台 UI（[docs/index.html](docs/index.html)）与配套矢量视觉资产；项目定位、隐私边界与公开发布均由作者审核拍板。
+  - 协作开发与公开版重构：**哈基米（Gemini）** 与 AI 助手参与完成了 `v0.4.0–v0.4.1` 的 MIT 公开化整理、干净版原创综合报告归纳、三态可打印 HTML 体检单、零依赖离线交互工作台 UI（[docs/index.html](docs/index.html)）与配套矢量视觉资产；项目定位、隐私边界与公开发布均由作者审核拍板。
 - **同系列公开项目**：[novel-workshop（小说写作工坊）](https://github.com/rumpelpalmour757-lgtm/novel-workshop) · [bjm-portable（BJM 通用迁移包）](https://github.com/rumpelpalmour757-lgtm/bjm-portable) · [rule-conflict-constitution（AI 协作宪法）](https://github.com/rumpelpalmour757-lgtm/rule-conflict-constitution)

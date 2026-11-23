@@ -296,12 +296,11 @@
       label: "Windows（v2rayN）",
       badge: "支持最完整",
       summary: "提供只读代理/防火墙体检、客户端边界审计、路由生成与校验、防路由器 53 端口旁路、物理网卡断网开关以及私有 ACL 本地快照备份。",
-      files: ["Inspect-WindowsProxy.ps1", "Inspect-WindowsFirewall.ps1", "audit_client_boundary.py", "build_routing.py", "Manage-WindowsLanDnsGuard.ps1", "Manage-WindowsKillSwitch.ps1"],
+      files: ["environment_report.py", "audit_client_boundary.py", "Inspect-WindowsProxy.ps1", "Inspect-WindowsFirewall.ps1", "build_routing.py", "Manage-WindowsLanDnsGuard.ps1", "Manage-WindowsKillSwitch.ps1"],
       commands: [
-        "# 1. 先做只读体检（自动脱敏个人目录与网卡名）",
-        "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Inspect-WindowsProxy.ps1",
+        "# 1. 一键导出三态体检单与可打印 HTML（含边界与 MCP 盘点）",
+        "py -3 .\\environment_report.py --html-out .\\env-health.html",
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Inspect-WindowsFirewall.ps1",
-        "py -3 .\\audit_client_boundary.py",
         "",
         "# 2. 校验随包路由模板",
         "py -3 .\\build_routing.py validate .\\routing-claude-ecosystem.json --claude-ecosystem",
@@ -316,9 +315,8 @@
       summary: "支持跨平台网络与客户端边界只读诊断、路由模板生成校验，以及 Claude Code 本地状态备份与恢复校验。",
       files: ["inspect_unix_network.py", "environment_report.py", "audit_client_boundary.py", "claude_local_data.py", "build_routing.py"],
       commands: [
-        "# 1. 导出只读脱敏环境摘要",
-        "python3 environment_report.py --format markdown",
-        "python3 audit_client_boundary.py",
+        "# 1. 一键导出三态体检单与可打印 HTML（含边界与 MCP 盘点）",
+        "python3 environment_report.py --html-out ./env-health.html",
         "",
         "# 2. 备份与核验本地配置状态（自动拦截明文密钥）",
         "python3 claude_local_data.py audit",
@@ -378,9 +376,9 @@
     {
       num: 1,
       title: "只读体检与客户端边界识别",
-      scripts: ["Inspect-WindowsProxy.ps1", "Inspect-WindowsFirewall.ps1", "inspect_unix_network.py", "audit_client_boundary.py"],
-      solves: "在不改动任何系统配置的前提下，先摸清当前代理、TUN 路由、防火墙规则、宿主机时区/语言、CLI 5 项防外联开关及 MSIX 放行规则。",
-      tradeoff: "所有输出自动遮盖个人目录和自定义网卡名；属于“快照式诊断”，不能替代真实的受控断线演练。"
+      scripts: ["environment_report.py", "audit_client_boundary.py", "Inspect-WindowsProxy.ps1", "Inspect-WindowsFirewall.ps1", "inspect_unix_network.py"],
+      solves: "一键输出三态摘要（已通过 / 存在缺口 / 未知盲区）与可打印离线 HTML 体检单，覆盖路由与 IPv6 暴露面、防火墙状态、宿主机时区/语言、CLI 5 项防外联开关、本地 MCP 桥接数量及 MSIX 放行规则。",
+      tradeoff: "所有输出自动脱敏个人路径、网卡名与 MCP 命令；出口 IP 历史信誉、运行态 GPU/TPM 与平台政策显式标为 unknown，不能替代受控断线演练。"
     },
     {
       num: 2,
@@ -457,6 +455,8 @@
     { id: "win-ipv6-idle", cat: "Windows 网络与防火墙", priority: "中", title: "已检查所有物理网卡（含断开的以太网）的 IPv6 绑定", desc: "避免日后插上有线网线或连接新热点时经物理网卡走原生 IPv6 绕行。" },
     { id: "cli-flags", cat: "浏览器与客户端边界", priority: "高", title: "独立 CLI 环境已配置全部 5 项防后台外联开关", desc: "运行 audit_client_boundary.py 确认 DISABLE_TELEMETRY、CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC、DISABLE_ERROR_REPORTING、DISABLE_AUTOUPDATER、DISABLE_GROWTHBOOK 均为 1。" },
     { id: "host-boundary", cat: "浏览器与客户端边界", priority: "高", title: "明确区分隔离浏览器与宿主机原生客户端边界", desc: "不把宿主机原生桌面端与隔离浏览器混用；Web 高敏会话固定在独立隔离浏览器内完成。" },
+    { id: "local-mcp-bridges", cat: "浏览器与客户端边界", priority: "高", title: "已核查本地 MCP 与宿主机桥接插件（localMcpBridges）", desc: "运行 environment_report.py --html-out 或 audit_client_boundary.py 查看本地 Desktop/CLI 的 MCP 配置数量，确认没有无意间把读取宿主机时钟或本地文件的桥接工具带入隔离会话。" },
+    { id: "vm-runtime-health", cat: "浏览器与客户端边界", priority: "中", title: "已理解「网络零泄露 ≠ 虚拟化/运行态无异常」的工程权衡", desc: "避免在无 GPU 硬件加速、无 TPM 的残缺虚拟机中高频冷启动原生桌面端，防止持续 WebGL 拉黑报错、no_tpm 降级与侵入式字体/输入法桥接副作用。" },
     { id: "browser-webrtc", cat: "浏览器与客户端边界", priority: "中", title: "核对浏览器 WebRTC、本地网络权限与同步开关", desc: "关闭不需要访问局域网服务的站点本地访问权限，检查浏览器同步选项，且不手工局部魔改 UA/字体。" },
     { id: "mail-pixel", cat: "浏览器与客户端边界", priority: "中", title: "邮箱客户端已关闭自动加载远程图片", desc: "防止通知邮件内的远程追踪像素在非代理日常环境下自动加载，相关链接只在隔离浏览器中打开。" },
     { id: "android-rules", cat: "移动端 Android & iOS", priority: "高", title: "Android v2rayNG 已导入 13 条规则、设 DoH 并重启服务", desc: "开启「本地 DNS」、远程 DNS 设为 Cloudflare DoH、开启「开机自动连接」，修改设置后已停止并重新启动服务。" },
@@ -464,6 +464,7 @@
     { id: "android-boundary", cat: "移动端 Android & iOS", priority: "中", title: "已理解 Android 原生 App 的应用层本地枚举边界", desc: "明确 VPN 仅管网络层，无法阻断原生 App 读取系统标识、SIM 与物理网卡 IPv6，高敏场景留在电脑端。" },
     { id: "ios-template", cat: "移动端 Android & iOS", priority: "中", title: "iOS Shadowrocket 已验证 IPv6 隧道接管与加密 DNS", desc: "通过 mobile/validate_shadowrocket.py 核验模板，并在 Wi-Fi 与蜂窝网络下分别完成基线测试。" },
     { id: "disconnect-drill", cat: "备份与应急验证", priority: "高", title: "已执行一次受控短时断线演练", desc: "使用可控故障条件（而非盲断生产网）验证代理失效时请求被阻断而非静默回落物理网卡直连。" },
+    { id: "exit-ip-blindspot", cat: "备份与应急验证", priority: "高", title: "已正视出口 IP 历史信誉盲区（exit_ip_reputation = unknown）", desc: "明确本工具包离线脚本不查外部代理库/欺诈分，不把本地零泄露全通过等同于共享出口历史干净，按需自行评估出口质量。" },
     { id: "account-privacy", cat: "备份与应急验证", priority: "中", title: "已核对账户隐私训练开关并了解服务地区政策边界", desc: "按个人偏好检查账户隐私选项；明确网络工程不替代官方地区政策与服务条款。" }
   ];
 
@@ -530,6 +531,11 @@
       q: "误区 5：单页指纹检测网站跑出低分就代表链路完全干净？",
       verdict: "实证否决",
       a: "社区单页检测工具只能看到浏览器表层特征，完全测不到外围域名出口分裂、MSIX 防火墙放行穿透、物理网卡 53 端口旁路或移动原生 App 本地枚举；为了凑分手工篡改 UA/字体反而可能命中前端一致性异常检测。"
+    },
+    {
+      q: "误区 6：套一层虚拟机把网络锁死零泄露，运行环境就一定更干净？",
+      verdict: "工程权衡",
+      a: "网络层零泄露不等于运行环境无异常。无 GPU 硬件加速与无 TPM 的轻/无头虚拟机在运行桌面端时，容易产生大量 WebGL 拉黑报错、no_tpm 降级与频繁冷启动遥测放大，为适配中文字体/剪贴板/输入法而注入的系统桥接也会引入额外副作用；同时宿主机 MCP 工具桥若未盘点也会跨界透出本机元信息。"
     }
   ];
 
@@ -541,6 +547,8 @@
     "CLI 终端千万别只改一个 ANTHROPIC_BASE_URL 就收工——补齐 5 项防后台外联开关，实测冷启动外联直接从 3 次 / 549 KB 归零！",
     "如果这台 Windows 上装过官方桌面端 MSIX，记得跑 Inspect-WindowsFirewall.ps1 查一眼 MsixClaudeOutboundAllowCount，防它穿透断网兜底。",
     "改完手机 v2rayNG 的 DNS 或路由规则后，光点保存不算生效！一定要回到主页点一次「停止」再「启动」重新加载核心喵。",
+    "v0.4.1 可以直接跑 environment_report.py --html-out ./env-health.html 出一份可打印 PDF 的三态体检单！记住 unknown 代表“本地没测到”，千万别当成通过喵。",
+    "本地 MCP 工具桥跑在宿主机上，需要严格隔离时记得用 environment_report.py 查一眼 localMcpBridges 数量，别让读本机时钟的桥接悄悄跨界啦！",
     "网络隐私工具包帮你把链路卫生、备份和防泄漏做到位，但合规边界还得按官方地区政策实事求是判断——诚实是第一准则！"
   ];
 
@@ -1012,7 +1020,7 @@
     const lines = [
       `# 跨平台网络隐私环境自检记录（${stamp}）`,
       "",
-      `> 由跨平台网络隐私与本机环境工具包 v0.4.0 离线工作台本地导出，不含账号凭据或节点信息。`,
+      `> 由跨平台网络隐私与本机环境工具包 v0.4.1 离线工作台本地导出，不含账号凭据或节点信息。`,
       ""
     ];
     CHECKLIST_ITEMS.forEach((item) => {
@@ -1026,7 +1034,7 @@
   function exportChecklistJson() {
     const stamp = new Date().toISOString().slice(0, 10);
     const payload = {
-      kitVersion: "0.4.0",
+      kitVersion: "0.4.1",
       exportedAt: new Date().toISOString(),
       completedCount: CHECKLIST_ITEMS.filter((i) => checklistState[i.id]).length,
       totalCount: CHECKLIST_ITEMS.length,

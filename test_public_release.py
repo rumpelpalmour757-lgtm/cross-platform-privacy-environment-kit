@@ -11,6 +11,7 @@ import unittest
 
 import build_kill_switch
 import build_routing
+import environment_report
 
 
 REPO = Path(__file__).resolve().parent
@@ -148,6 +149,29 @@ console.log(JSON.stringify({ routing, ksRanges: ks.ipv4BlockedRanges, ksDhcpWarn
             rels = [p.as_posix() for p in mod.kit_files(root, skip_repo_only=True)]
             self.assertEqual(rels, ["ok.py"])
         mod.privacy_gate()
+
+    def test_release_version_and_offline_html_report_consistency(self):
+        version = environment_report.KIT_VERSION
+        readme = (REPO / "README.md").read_text(encoding="utf-8")
+        ui_html = (REPO / "docs" / "index.html").read_text(encoding="utf-8")
+        changelog = (REPO / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn(f"v{version}", readme)
+        self.assertIn(f"v{version}", ui_html)
+        self.assertIn(f"## v{version}", changelog)
+        sample = {
+            "schemaVersion": 2,
+            "kitVersion": version,
+            "generatedAtUtc": "2026-11-23T14:30:00Z",
+            "platform": "Linux",
+            "network": {"status": "unavailable", "reason": "test"},
+            "claudeLocalData": {"status": "unavailable", "reason": "test"},
+            "clientBoundary": {"status": "unavailable", "reason": "test"},
+        }
+        rendered = environment_report.render_html_report(sample)
+        self.assertNotRegex(rendered, r'<script[^>]+src=["\']https?://')
+        self.assertNotRegex(rendered, r'<link[^>]+href=["\']https?://')
+        self.assertIn("exit_ip_reputation", rendered)
+        self.assertIn("@media print", rendered)
 
 
 if __name__ == "__main__":

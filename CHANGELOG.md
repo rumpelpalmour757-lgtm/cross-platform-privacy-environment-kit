@@ -1,5 +1,12 @@
 # 版本记录
 
+## v0.4.1（2026-11-23）— 统一三态体检单与工程边界补强
+
+- **合并客户端边界审计与三态安全摘要**：`environment_report.py` 现自动合并 `audit_client_boundary.py`，新增 10 项三态核验摘要（`pass` 已通过 / `gap` 存在缺口 / `unknown` 未知盲区）与三层证据分级（`observed_local` / `static_config` / `external_blind_spot`），强制把外部出口 IP 信誉、运行态 GPU/TPM 健康度与平台地区政策显式标为 `unknown`。
+- **一键导出离线可打印 HTML 体检单**：`environment_report.py` 新增 `--html-out`、`--json-out`、`--from-json` 与 `--quiet` 参数，输出零外部 CDN、全量 HTML 转义、支持直接打印存 PDF 的单文件离线体检单（拒绝通过符号链接写入）。
+- **本地 MCP 桥接只读盘点**：`audit_client_boundary.py` 新增 `--config-dir` 参数与 `localMcpBridges` 字段，只读统计 Desktop/CLI 本地 MCP Server 配置数量（绝不输出名称、命令、参数或密钥）并在配置存在时提醒复核宿主机跨界元信息。
+- **补强文档、清单与交互工作台**：在 `PRIVACY-CHECKLIST.md`、`docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md`、`CLAUDE-PROXY-OPTIMIZATION-GUIDE.md` 与 `docs/index.html` 中增补本地 MCP 桥接自查、出口 IP 历史信誉盲区提示、第 6 条误区（「网络层零泄露 ≠ 虚拟化/运行态无异常」的工程权衡）及对应交互检查项，并修正 UI 中 Unix 体检命令示例。
+
 ## v0.4.0（2026-11-23）— MIT 公开开源版
 
 - **正式以 MIT 许可公开发布**：新增根目录 [LICENSE](LICENSE)（Copyright (c) 2026 Celeste）与清晰的 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。
