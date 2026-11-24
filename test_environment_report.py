@@ -169,10 +169,10 @@ class ReportTests(unittest.TestCase):
                 "status": "collected",
                 "data": {
                     "default_routes": {
-                        "ipv4": {"status": "observed", "interface_types": {"tunnel_candidate": 1}},
-                        "ipv6": {"status": "observed", "forwarding_candidate_count": 0, "interface_types": {}},
+                        "ipv4": {"status": "observed", "candidate_interface_types": {"tunnel_candidate": 1}},
+                        "ipv6": {"status": "observed", "forwarding_candidate_count": 0, "candidate_interface_types": {}},
                     },
-                    "split_tunnel_routes": {"ipv4": {"status": "observed", "interface_types": {}}},
+                    "split_tunnel_routes": {"ipv4": {"status": "observed", "candidate_interface_types": {}}},
                     "dns_configuration": {
                         "status": "observed",
                         "source": "systemd_resolved",
@@ -209,6 +209,23 @@ class ReportTests(unittest.TestCase):
         self.assertEqual(checks["host_client_boundary"]["status"], "pass")
         self.assertEqual(checks["cli_anti_telemetry_switches"]["status"], "pass")
         self.assertEqual(checks["local_mcp_host_bridges"]["status"], "pass")
+
+    def test_all_unavailable_subsystems_mark_network_collector_unknown(self):
+        sample = {
+            "platform": "Windows",
+            "network": {
+                "status": "collected",
+                "data": {
+                    "Routing": {"ActiveStore": "unavailable"},
+                    "Dns": {"AdapterResolvers": "unavailable"},
+                    "Firewall": {"ActiveStore": "unavailable"},
+                },
+            },
+            "clientBoundary": {"status": "unavailable"},
+            "claudeLocalData": {"status": "unavailable"},
+        }
+        checks = {item["id"]: item for item in build_tri_state_summary(sample)["checks"]}
+        self.assertEqual(checks["network_collector"]["status"], "unknown")
 
     def test_render_html_report_is_offline_printable_and_escapes_html(self):
         payload = {

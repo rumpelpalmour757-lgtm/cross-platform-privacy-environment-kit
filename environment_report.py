@@ -76,7 +76,15 @@ def _ensure_unlinked_script(script_path):
 
 def capture_json(command):
     try:
-        result = subprocess.run(command, capture_output=True, timeout=70, check=False)
+        run_kwargs = {
+            "stdin": subprocess.DEVNULL,
+            "capture_output": True,
+            "timeout": 70,
+            "check": False,
+        }
+        if os.name == "nt" and hasattr(subprocess, "CREATE_NO_WINDOW"):
+            run_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        result = subprocess.run(command, **run_kwargs)
     except (OSError, subprocess.SubprocessError):
         return {"status": "unavailable", "reason": "collector-start-or-timeout"}
     if result.returncode != 0:
@@ -115,6 +123,42 @@ def _make_check(check_id, category, title, status, evidence_tier, detail):
         "evidenceTier": evidence_tier,
         "detail": detail,
     }
+
+
+def _has_observed_network_subsystem(network_data):
+    if not isinstance(network_data, dict):
+        return False
+    if "Routing" in network_data or "Dns" in network_data or "Firewall" in network_data:
+        routing = network_data.get("Routing") if isinstance(network_data.get("Routing"), dict) else {}
+        dns = network_data.get("Dns") if isinstance(network_data.get("Dns"), dict) else {}
+        firewall = network_data.get("Firewall") if isinstance(network_data.get("Firewall"), dict) else {}
+        return (
+            routing.get("ActiveStore") == "observed"
+            or dns.get("AdapterResolvers") == "observed"
+            or firewall.get("ActiveStore") == "observed"
+        )
+    if "default_routes" in network_data or "dns_configuration" in network_data:
+        routes = network_data.get("default_routes") if isinstance(network_data.get("default_routes"), dict) else {}
+        ipv4 = routes.get("ipv4") if isinstance(routes.get("ipv4"), dict) else {}
+        ipv6 = routes.get("ipv6") if isinstance(routes.get("ipv6"), dict) else {}
+        dns = network_data.get("dns_configuration") if isinstance(network_data.get("dns_configuration"), dict) else {}
+        return (
+            ipv4.get("status") == "observed"
+            or ipv6.get("status") == "observed"
+            or dns.get("status") == "observed"
+        )
+    return False
+
+
+def _unix_route_interface_types(route_obj):
+    if not isinstance(route_obj, dict):
+        return set()
+    mapping = route_obj.get("candidate_interface_types")
+    if not isinstance(mapping, dict):
+        mapping = route_obj.get("interface_types")
+    if not isinstance(mapping, dict):
+        return set()
+    return {key for key, count in mapping.items() if count}
 
 
 def _evaluate_routing_check(network_data):
@@ -195,18 +239,20 @@ def _evaluate_routing_check(network_data):
                 "observed_local",
                 "Local IPv4 route table could not be observed.",
             )
-        v4_types = set((ipv4.get("interface_types") or {}).keys())
+        v4_types = _unix_route_interface_types(ipv4)
         split_v4 = split_routes.get("ipv4") if isinstance(split_routes, dict) else None
         if isinstance(split_v4, dict):
-            v4_types.update((split_v4.get("interface_types") or {}).keys())
+            v4_types.update(_unix_route_interface_types(split_v4))
         v6_types = set()
         v6_active = False
         if isinstance(ipv6, dict) and ipv6.get("status") == "observed":
             v6_active = (ipv6.get("forwarding_candidate_count") or 0) > 0
-            v6_types.update((ipv6.get("interface_types") or {}).keys())
+            v6_types.update(_unix_route_interface_types(ipv6))
         split_v6 = split_routes.get("ipv6") if isinstance(split_routes, dict) else None
         if isinstance(split_v6, dict):
-            v6_types.update((split_v6.get("interface_types") or {}).keys())
+            if split_v6.get("status") == "observed" and (split_v6.get("forwarding_candidate_count") or 0) > 0:
+                v6_active = True
+            v6_types.update(_unix_route_interface_types(split_v6))
         if v6_active and "tunnel_candidate" not in v6_types:
             return _make_check(
                 "routing_and_ipv6_surface",
@@ -417,7 +463,7 @@ def build_tri_state_summary(report):
     local_payload = local_data.get("data") if local_data.get("status") == "collected" and isinstance(local_data.get("data"), dict) else None
 
     checks = []
-    if network_data is not None:
+    if network_data is not None and _has_observed_network_subsystem(network_data):
         checks.append(_make_check(
             "network_collector",
             "network",
@@ -425,6 +471,15 @@ def build_tri_state_summary(report):
             "pass",
             "observed_local",
             f"Read-only local network observations collected for {platform_name}.",
+        ))
+    elif network_data is not None:
+        checks.append(_make_check(
+            "network_collector",
+            "network",
+            "Local network evidence collection",
+            "unknown",
+            "observed_local",
+            f"Network collector returned no observed routing, DNS, or firewall subsystem on {platform_name}.",
         ))
     else:
         reason = network.get("reason") or network.get("status") or "missing"

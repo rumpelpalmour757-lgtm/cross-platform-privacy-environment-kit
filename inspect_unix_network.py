@@ -35,7 +35,7 @@ def read_command(*args):
         return None
     try:
         result = subprocess.run(
-            [executable, *args[1:]], capture_output=True, timeout=4, check=True,
+            [executable, *args[1:]], stdin=subprocess.DEVNULL, capture_output=True, timeout=4, check=True,
             encoding="utf-8", errors="replace", env={"LC_ALL": "C", "PATH": SYSTEM_COMMAND_PATH},
         )
     except (OSError, subprocess.SubprocessError):

@@ -585,6 +585,7 @@ def ensure_v2rayn_stopped():
             "-Command",
             f"@(Get-Process -ErrorAction Stop | Where-Object {{ $_.ProcessName -in @({quoted_names}) }}).Count",
         ],
+        stdin=subprocess.DEVNULL,
         capture_output=True,
         timeout=20,
         check=True,
