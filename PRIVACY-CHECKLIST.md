@@ -14,7 +14,7 @@
 | CLI 防后台外联开关 | 运行 `py -3 .\audit_client_boundary.py` 查看 `cliAntiTelemetryFlags`（`DISABLE_TELEMETRY=1`、`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` 等 5 项） | 实测未开启时 CLI 冷启动仍会发起 `api.anthropic.com:443` 外联并落盘遥测，开启后可归零 |
 | 本地 MCP 与宿主机桥接自查 | 运行 `py -3 .\environment_report.py --html-out .\env-health.html` 或 `py -3 .\audit_client_boundary.py` 核对 `localMcpBridges` | 本地 MCP 服务运行在宿主机语境下（只读统计配置数量，不输出名称与命令），可能把宿主机系统时钟、时区或本地文件元信息桥接入会话；需要严格隔离时应逐项复核已启用的桥接插件 |
 | 出口 IP 历史信誉盲区 | 核对 `environment_report.py` 三态摘要中的 `exit_ip_reputation`（固定标为 `unknown`） | 离线本机脚本不查询外部 IP 信誉/代理池库（如 Spur、IPQS、MaxMind），也无法核实共享出口是否存在前任「坏邻居」记录；不要把“本地零泄露通过”等同于“出口信誉干净” |
-| 网络层零泄露 ≠ 运行环境无异常 | 若尝试使用独立虚拟机运行桌面客户端，核对图形加速（GPU/WebGL）、TPM 可用性与冷启动频率 | 即使网络边界做到严格 fail-closed 零泄露，无 GPU / 无 TPM 的残缺虚拟机仍可能产生持续 WebGL 拉黑报错、`no_tpm` 降级，以及为适配字体/输入法/剪贴板引入的额外侵入式桥接副作用；短时间反复冷启动也会放大客户端启动遥测 |
+| 虚拟机里的桌面客户端 | 若 Desktop 显示异常，核对同次启动的 WebGL 报错。出现 `no_tpm` 时核对客机是否提供 TPM。若整台客机短暂断网，另查网关关闭和恢复的时间 | WebGL 和 TPM 日志描述当时的本地功能。这些记录单独不足以解释网页验证失败或账号处置 |
 | 移动端原生 App 限制 | 核对 [mobile/README.md](mobile/README.md) 中的 Android 与 iOS 架构差异 | 代理/VPN 仅管网络层；Android 原生 App 可在应用层直接读取设备标识与物理网卡 IPv6，高敏感场景建议固定在电脑端隔离浏览器 |
 | Android VPN 保活与防漏 | `v2rayNG` 已加入电池「不限制后台」、开启「设备启动后自动连接」、系统「始终开启 VPN」与「阻止不使用 VPN 的连接」；改设置后已停止再启动服务 | 网页认证 Wi-Fi 需临时关闭阻断开关；应用分身与主应用共用物理网卡、SIM 与时区，不算独立环境 |
 | 防火墙第三方与 MSIX 放行复核 | 运行 `Inspect-WindowsFirewall.ps1` 查看 `EnabledOutboundAllowBreakdown` 与 `MsixClaudeOutboundAllowCount` | 确认无闲置第三方全地址直连放行，且未残留官方桌面端 MSIX 自动写入的 `Claude.exe`/`cowork-svc.exe` TCP 出站放行规则（该类显式放行会在断 TUN 时穿透默认出站阻断） |
@@ -24,5 +24,17 @@
 | 官方申诉或退款 | 分别使用 Anthropic 申诉、Apple 或购买渠道的退款页面，说明真实情况 | 账号处置与付款渠道分别调查，需等待正式回复。[Claude 申诉](https://support.claude.com/en/articles/8241253-safeguards-warnings-and-appeals) · [Apple 退款](https://support.apple.com/en-us/118223) |
 
 本地网络诊断可验证指定连接和特定故障条件。是否符合 Anthropic 的服务范围按官方地区政策判断，包含用户实际所在地。没有公开依据表明指纹测试评分能预测账号处置。包里的脚本不要求你提供账号凭据。[Anthropic 地区政策](https://www.anthropic.com/legal/supported-regions)
+
+## 网页登录遇到问题时
+
+先在本地记下**第一次看到提示的日期、时间和时区**、当时用的客户端，以及页面或邮件的**提示原文**。登录要求验证、页面提示地区不可用、收到账号停用邮件，分别记录。若只能查到邮件到达或导出日志的时间，就将首次出现时间记为「未知」。
+
+| 实际现象 | 下一步 |
+| --- | --- |
+| 验证框空白或加载失败 | 记下页面显示的错误码。例如 Turnstile 的 `200500` 表示验证框加载失败，可检查该页面是否成功加载 `challenges.cloudflare.com` 的资源。[Cloudflare 错误码说明](https://developers.cloudflare.com/turnstile/troubleshooting/client-side-errors/error-codes/) |
+| 手动完成后又出现验证框 | 保持同一网络出口，在 Cage 与受支持的普通浏览器中各手动试一次。分别记下结果、时间，以及页面给出的错误码或 Ray ID。只有 Cage 反复出现时，再检查其扩展、脚本加载和连接稳定性。 |
+| 验证通过后，Claude 才显示限制 | 另记 Claude 提示的原文和首次看到的时间。涉及账号停用时，通过官方支持核实处置类型和原因。 |
+
+公开反馈前遮去邮箱、账号标识、令牌及带参数的链接。完整 Ray ID 留给官方支持。字体、无痕窗口、出口 IP 历史信誉或另一次 Desktop 的报错，单独都不足以认定账号受限的原因。详见[公开综合报告](docs/CLIENT-BOUNDARY-AND-LEAK-REPORT.md)。
 
 更多基于逆向研究报告的代理层优化与边界说明，见 [CLAUDE-PROXY-OPTIMIZATION-GUIDE.md](CLAUDE-PROXY-OPTIMIZATION-GUIDE.md)。

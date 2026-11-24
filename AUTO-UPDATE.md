@@ -8,7 +8,7 @@
 
 [tools/auto_update.py](tools/auto_update.py) 每次运行依次：
 
-1. 从本机工具包源目录 `LocalProxyNetwork\privacy-environment-kit` 同步受控脚本与模板改动（自动保护仓库自带的 `LICENSE`、`THIRD-PARTY-NOTICES.md`、`CHANGELOG.md`、`docs/`、`.github/`、`tools/`，并永久排除 `research-reports/` 与 `routing-global.json` 等本机私有文件）。
+1. 从本机工具包源目录 `LocalProxyNetwork\privacy-environment-kit` 同步受控脚本与模板改动。公开版的 `PRIVACY-CHECKLIST.md`、代理指南、`docs/` 等说明在仓库内维护。同步时排除 `research-reports/` 与 `routing-global.json` 等本机私有文件。
 2. **隐私与版权闸门**：发现 Windows 用户名、账号邮箱、代理分享链接（`vless://` 等），或任何第三方镜像目录与微信转发原文标记，就整次中止，不提交、不上传。
 3. 跑全部单元测试（含 UI 与 Python 算法一致性及 Markdown 链接自检），失败就中止并撤回本次同步。
 4. 可选：生成一周一次的国内直连名单 **预览**（只生成，不会自动套用到 v2rayN）。

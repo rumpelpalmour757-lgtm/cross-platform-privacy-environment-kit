@@ -25,7 +25,7 @@ DEFAULT_ALLOWLIST_DIR = HOME / "LocalProxyNetwork" / "reports" / "allowlist-prev
 REPO_ONLY = {
     ".git", ".gitignore", ".gitattributes", ".github",
     "LICENSE", "THIRD-PARTY-NOTICES.md", "CHANGELOG.md",
-    "README.md", "CLAUDE-PROXY-OPTIMIZATION-GUIDE.md",
+    "README.md", "CLAUDE-PROXY-OPTIMIZATION-GUIDE.md", "PRIVACY-CHECKLIST.md",
     "docs", "tools", "AUTO-UPDATE.md", "test_public_release.py",
 }
 EXCLUDED_NAMES = {

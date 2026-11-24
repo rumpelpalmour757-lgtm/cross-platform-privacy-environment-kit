@@ -456,7 +456,7 @@
     { id: "cli-flags", cat: "浏览器与客户端边界", priority: "高", title: "独立 CLI 环境已配置全部 5 项防后台外联开关", desc: "运行 audit_client_boundary.py 确认 DISABLE_TELEMETRY、CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC、DISABLE_ERROR_REPORTING、DISABLE_AUTOUPDATER、DISABLE_GROWTHBOOK 均为 1。" },
     { id: "host-boundary", cat: "浏览器与客户端边界", priority: "高", title: "明确区分隔离浏览器与宿主机原生客户端边界", desc: "不把宿主机原生桌面端与隔离浏览器混用；Web 高敏会话固定在独立隔离浏览器内完成。" },
     { id: "local-mcp-bridges", cat: "浏览器与客户端边界", priority: "高", title: "已核查本地 MCP 与宿主机桥接插件（localMcpBridges）", desc: "运行 environment_report.py --html-out 或 audit_client_boundary.py 查看本地 Desktop/CLI 的 MCP 配置数量，确认没有无意间把读取宿主机时钟或本地文件的桥接工具带入隔离会话。" },
-    { id: "vm-runtime-health", cat: "浏览器与客户端边界", priority: "中", title: "已理解「网络零泄露 ≠ 虚拟化/运行态无异常」的工程权衡", desc: "避免在无 GPU 硬件加速、无 TPM 的残缺虚拟机中高频冷启动原生桌面端，防止持续 WebGL 拉黑报错、no_tpm 降级与侵入式字体/输入法桥接副作用。" },
+    { id: "vm-runtime-health", cat: "浏览器与客户端边界", priority: "中", title: "能区分虚拟机运行日志、网页验证和账号提示", desc: "WebGL 和 no_tpm 记录桌面端的图形与硬件状态。核对网页或账号问题时，先找提示原文、首次可见时间和时区，再对照同一客户端的记录。" },
     { id: "browser-webrtc", cat: "浏览器与客户端边界", priority: "中", title: "核对浏览器 WebRTC、本地网络权限与同步开关", desc: "关闭不需要访问局域网服务的站点本地访问权限，检查浏览器同步选项，且不手工局部魔改 UA/字体。" },
     { id: "mail-pixel", cat: "浏览器与客户端边界", priority: "中", title: "邮箱客户端已关闭自动加载远程图片", desc: "防止通知邮件内的远程追踪像素在非代理日常环境下自动加载，相关链接只在隔离浏览器中打开。" },
     { id: "android-rules", cat: "移动端 Android & iOS", priority: "高", title: "Android v2rayNG 已导入 13 条规则、设 DoH 并重启服务", desc: "开启「本地 DNS」、远程 DNS 设为 Cloudflare DoH、开启「开机自动连接」，修改设置后已停止并重新启动服务。" },
@@ -530,12 +530,12 @@
     {
       q: "误区 5：单页指纹检测网站跑出低分就代表链路完全干净？",
       verdict: "实证否决",
-      a: "社区单页检测工具只能看到浏览器表层特征，完全测不到外围域名出口分裂、MSIX 防火墙放行穿透、物理网卡 53 端口旁路或移动原生 App 本地枚举；为了凑分手工篡改 UA/字体反而可能命中前端一致性异常检测。"
+      a: "单页工具看到的是当前浏览器能呈现的特征。要确认 DNS 或出口路径，需另看相应的网络记录。页面能识别简中字体，本身不足以判断账号受限的原因。"
     },
     {
       q: "误区 6：套一层虚拟机把网络锁死零泄露，运行环境就一定更干净？",
       verdict: "工程权衡",
-      a: "网络层零泄露不等于运行环境无异常。无 GPU 硬件加速与无 TPM 的轻/无头虚拟机在运行桌面端时，容易产生大量 WebGL 拉黑报错、no_tpm 降级与频繁冷启动遥测放大，为适配中文字体/剪贴板/输入法而注入的系统桥接也会引入额外副作用；同时宿主机 MCP 工具桥若未盘点也会跨界透出本机元信息。"
+      a: "Cage 案例里的 26 条 WebGL 错误都出现在最后一次 Desktop 启动之后。报告缺少账号首次受限时间和可复核的网页验证失败记录。即使图形错误发生在先，要判断因果关系，也需要同一故障的独立证据。维护者可以先查有网关关闭和恢复记录的两次客机断网。"
     }
   ];
 
@@ -543,7 +543,7 @@
     "喵～这个工作台 100% 离线运行，没有加载任何外部字体、统计脚本或 CDN，连你勾的自检清单都只存在本机浏览器里！",
     "装 Windows 断网开关前先看一眼是不是 DHCP 网卡！家用 Wi-Fi 和手机热点一定要填 -DhcpServer，不然租约一到期就会断网喵。",
     "装了 LAN DNS Guard 以后，如果哪天关掉代理想裸连，记得先跑 -Action Remove，不然指向路由器的 DNS 查询全都会被挡住！",
-    "别被单页指纹打分网站带偏啦：手工乱改浏览器 UA 或字体反而容易触发自相矛盾，保持一套干净、自洽的独立环境更省心。",
+    "网页卡在验证时，先记下看到的原文和时间。报告页可以按「验证框空白」「反复验证」「通过后收到提示」查看排查办法。",
     "CLI 终端千万别只改一个 ANTHROPIC_BASE_URL 就收工——补齐 5 项防后台外联开关，实测冷启动外联直接从 3 次 / 549 KB 归零！",
     "如果这台 Windows 上装过官方桌面端 MSIX，记得跑 Inspect-WindowsFirewall.ps1 查一眼 MsixClaudeOutboundAllowCount，防它穿透断网兜底。",
     "改完手机 v2rayNG 的 DNS 或路由规则后，光点保存不算生效！一定要回到主页点一次「停止」再「启动」重新加载核心喵。",

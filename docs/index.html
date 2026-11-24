@@ -347,12 +347,34 @@
             <strong>2. 出口 IP 历史信誉固定标为 <code>unknown</code></strong><br>
             离线本地脚本从不查询 Spur、IPQS、MaxMind 等外部代理库，也不读取实时公网出口历史。体检单强制将 <code>exit_ip_reputation</code> 标为未知盲区，杜绝把“本地零泄露通过”等同于“共享出口无坏邻居历史”。
           </div>
-          <div class="callout callout-danger">
-            <strong>3. 网络层零泄露 ≠ 虚拟化/运行态无异常</strong><br>
-            无 GPU 硬件加速与无 TPM 的残缺虚拟机运行桌面客户端时，即便网络层严格 fail-closed，仍可能出现持续 WebGL 拉黑报错、<code>no_tpm</code> 降级、频繁冷启动遥测放大，以及为适配字体/输入法注入桥接带来的新副作用。
+          <div class="callout">
+            <strong>3. 桌面端日志能说明什么</strong><br>
+            WebGL 报错记录了桌面端当时的图形问题，<code>no_tpm</code> 表示客户端当时无法使用 TPM。网页验证要看同一次浏览器操作的结果，账号状态要看服务方给出的提示。
           </div>
         </div>
       </div>
+
+      <section class="card section" aria-labelledby="web-triage-title">
+        <div class="section-head">
+          <div>
+            <h2 id="web-triage-title">网页登录卡在哪一步？</h2>
+            <p>先在自己的记录里写下首次看到提示的时间（含时区）、使用的客户端和提示原文。时间不详就填“未知”。</p>
+          </div>
+        </div>
+        <details class="triage-step">
+          <summary>验证框空白或加载失败</summary>
+          <p>看网页有没有显示错误码。例如 <code>200500</code> 表示验证框未能加载，可查看该页向 <code>challenges.cloudflare.com</code> 发出的验证框请求是否被拦截。这个号码是对照示例，记录时只填实际看到的错误码。</p>
+        </details>
+        <details class="triage-step">
+          <summary>手动完成后，验证框又出现</summary>
+          <p>保持同一网络出口，用受支持的普通浏览器和 Cage 在同一页面各手动测试一次。分别记录结果、时间，以及页面显示的错误码和 Ray ID。如果只有 Cage 能重复出现这个现象，再查扩展、脚本加载和连接稳定性。无痕窗口可用于排查扩展或缓存干扰。</p>
+        </details>
+        <details class="triage-step">
+          <summary>验证已通过，返回 Claude 后才看到限制提示</summary>
+          <p>另记 Claude 提示的原文和首次可见时间。登录时要求补充验证、页面提示地区不可用、收到停用邮件，分别记录。邮件的收件时间也可单独留存，服务端何时作出决定仍待确认。</p>
+        </details>
+        <p>Cloudflare 官方文档 · <a href="https://developers.cloudflare.com/turnstile/troubleshooting/client-side-errors/error-codes/" target="_blank" rel="noopener">验证框错误码</a> · <a href="https://developers.cloudflare.com/cloudflare-challenges/troubleshooting/challenge-solve-issues/" target="_blank" rel="noopener">验证循环排查</a></p>
+      </section>
 
       <!-- 五端边界对照表 -->
       <div class="card section">

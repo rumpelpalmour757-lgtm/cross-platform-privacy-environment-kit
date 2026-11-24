@@ -792,6 +792,32 @@ th {
   background: var(--ok);
 }
 
+.triage-step {
+  border-top: 1px solid var(--border);
+  padding: 10px 0;
+}
+
+.triage-step summary {
+  cursor: pointer;
+  color: var(--ink-strong);
+  font-weight: 700;
+}
+
+.triage-step p {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+
+@media print {
+  .triage-step {
+    break-inside: avoid;
+  }
+  .triage-step::details-content {
+    display: block;
+    content-visibility: visible;
+  }
+}
+
 /* 误区纠偏卡 */
 .myth-card {
   border: 1px solid var(--border);

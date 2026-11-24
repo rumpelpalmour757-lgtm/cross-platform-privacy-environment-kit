@@ -138,7 +138,7 @@ console.log(JSON.stringify({ routing, ksRanges: ks.ipv4BlockedRanges, ksDhcpWarn
         spec = importlib.util.spec_from_file_location("auto_update", auto_path)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        for protected in ("LICENSE", "THIRD-PARTY-NOTICES.md", "docs", ".github", "CHANGELOG.md"):
+        for protected in ("LICENSE", "THIRD-PARTY-NOTICES.md", "docs", ".github", "CHANGELOG.md", "PRIVACY-CHECKLIST.md"):
             self.assertIn(protected, mod.REPO_ONLY)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
