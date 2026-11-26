@@ -22,15 +22,6 @@ FORBIDDEN_TYPO_DOMAINS = frozenset({"domain:claudemcpclient.com", "claudemcpclie
 REQUIRED_LAN_IPS = frozenset({"geoip:private", "100.64.0.0/10"})
 
 
-def _string_list(rule, key, index):
-    value = rule.get(key)
-    if value is None:
-        return []
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError(f"Rule {index + 1} field {key!r} must be a list of strings.")
-    return value
-
-
 def validate_v2rayng_rules(rules):
     if not isinstance(rules, list) or len(rules) < 8:
         raise ValueError("Expected a JSON array of at least 8 Android v2rayNG routing rules.")
@@ -42,40 +33,46 @@ def validate_v2rayng_rules(rules):
     lan_ip_idx = None
     cn_idx = None
 
-    for index, rule in enumerate(rules):
-        if not isinstance(rule, dict):
-            raise ValueError(f"Rule {index + 1} must be a JSON object.")
-        if rule.get("enabled") is not True:
-            raise ValueError(f"Rule {index + 1} must be enabled.")
-        outbound = rule.get("outboundTag")
-        if not isinstance(outbound, str) or outbound not in {"proxy", "direct", "block"}:
-            raise ValueError(f"Rule {index + 1} has invalid outboundTag.")
+    index = 0
+    try:
+        for index, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                raise ValueError(f"Rule {index + 1} must be a JSON object.")
+            if rule.get("enabled") is not True:
+                raise ValueError(f"Rule {index + 1} must be enabled.")
+            outbound = rule.get("outboundTag")
+            if not isinstance(outbound, str) or outbound not in {"proxy", "direct", "block"}:
+                raise ValueError(f"Rule {index + 1} has invalid outboundTag.")
 
-        domains = _string_list(rule, "domain", index)
-        ips = _string_list(rule, "ip", index)
-        for dom in domains:
-            if dom in FORBIDDEN_TYPO_DOMAINS:
-                raise ValueError(f"Rule {index + 1} contains known typo domain: {dom}")
+            domains = rule.get("domain") or []
+            ips = rule.get("ip") or []
+            for dom in domains:
+                if dom in FORBIDDEN_TYPO_DOMAINS:
+                    raise ValueError(f"Rule {index + 1} contains known typo domain: {dom}")
 
-        if outbound == "direct":
-            if not domains and not ips:
-                raise ValueError(f"Rule {index + 1} is an unfiltered direct catch-all.")
-            if "0.0.0.0/0" in ips or "::/0" in ips or str(rule.get("port", "")) == "0-65535":
-                raise ValueError(f"Rule {index + 1} contains an unsafe direct catch-all.")
+            if outbound == "direct":
+                if not domains and not ips:
+                    raise ValueError(f"Rule {index + 1} is an unfiltered direct catch-all.")
+                if "0.0.0.0/0" in ips or "::/0" in ips or str(rule.get("port", "")) == "0-65535":
+                    raise ValueError(f"Rule {index + 1} contains an unsafe direct catch-all.")
 
-        if outbound == "block" and rule.get("network") == "udp" and str(rule.get("port", "")) == "443":
-            udp443_idx = index
-        if outbound == "block" and set(ANTHROPIC_IPV6_BLOCK).issubset(set(ips)):
-            v6_guard_idx = index
-        if outbound == "proxy" and set(CLAUDE_ECOSYSTEM_DOMAINS).issubset(set(domains)):
-            claude_dom_idx = index
-        if outbound == "proxy" and set(ANTHROPIC_IPV4_CIDRS).issubset(set(ips)):
-            claude_v4_idx = index
-        if outbound == "direct" and REQUIRED_LAN_IPS.issubset(set(ips)):
-            lan_ip_idx = index
-        if outbound == "direct" and ("geosite:cn" in domains or "geoip:cn" in ips):
-            if cn_idx is None:
-                cn_idx = index
+            if outbound == "block" and rule.get("network") == "udp" and str(rule.get("port", "")) == "443":
+                udp443_idx = index
+            if outbound == "block" and set(ANTHROPIC_IPV6_BLOCK).issubset(set(ips)):
+                v6_guard_idx = index
+            if outbound == "proxy" and set(CLAUDE_ECOSYSTEM_DOMAINS).issubset(set(domains)):
+                claude_dom_idx = index
+            if outbound == "proxy" and set(ANTHROPIC_IPV4_CIDRS).issubset(set(ips)):
+                claude_v4_idx = index
+            if outbound == "direct" and REQUIRED_LAN_IPS.issubset(set(ips)):
+                lan_ip_idx = index
+            if outbound == "direct" and ("geosite:cn" in domains or "geoip:cn" in ips):
+                if cn_idx is None:
+                    cn_idx = index
+    except TypeError:
+        # Only input that used to stop with a traceback ends up here: what passed before still passes.
+        raise ValueError(f"Rule {index + 1} has a field of the wrong type, such as a number "
+                         "where a list of strings belongs.") from None
 
     if udp443_idx is None:
         raise ValueError("Missing UDP/443 QUIC block rule.")

@@ -80,6 +80,40 @@ def write(path, text):
     path.write_bytes(text.encode("utf-8") if isinstance(text, str) else text)
 
 
+def load_script(path, name):
+    """Import a copy of the script, so its REPO is the folder above that copy's tools/."""
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def can_symlink(folder):
+    try:
+        os.symlink("target", folder / "link-probe")
+    except (OSError, NotImplementedError):
+        return False
+    os.unlink(folder / "link-probe")
+    return True
+
+
+# A test, copied in from the source directory, that writes into the repository while the
+# unit tests run and then fails, so the run rolls back with those files in place.
+LATE_WRITER_TEST = (
+    "import pathlib\nimport unittest\n\n\n"
+    "class LateWriterTests(unittest.TestCase):\n"
+    "    def test_writes_then_fails(self):\n"
+    "        root = pathlib.Path(__file__).resolve().parent\n"
+    "        (root / 'later 笔记.md').write_text('mine\\n', encoding='utf-8')\n"
+    "        (root / 'mobile' / 'later.json').write_text('{}\\n', encoding='utf-8')\n"
+    "        (root / 'extra' / 'later.txt').write_text('mine\\n', encoding='utf-8')\n"
+    "        (root / 'kit.py.orig').write_text('mine\\n', encoding='utf-8')\n"
+    "        with open(root / 'run.log', 'a', encoding='utf-8') as log:\n"
+    "            log.write('appended during the run\\n')\n"
+    "        self.fail('fixture')\n"
+)
+
+
 class Sandbox:
     """A source folder, a repository with the script in tools/, and a bare origin."""
 
@@ -246,6 +280,132 @@ class WorkingTreeSafetyTests(SandboxTestCase):
         code, output = self.box.update("--allow-new", "../outside.py")
         self.assertEqual(code, 2, output)
         self.assertIn("relative to the repository root", output)
+
+    def test_files_that_appear_during_the_run_survive_the_rollback(self):
+        box = self.box
+        write(box.repo / "run.log", "local log\n")
+        write(box.source / "test_late.py", LATE_WRITER_TEST)
+        write(box.source / "extra" / "helper.py", "HELPER = 1\n")
+        head = box.head()
+        code, output = box.update("--allow-new", "test_late.py", "--allow-new", "extra/helper.py")
+        self.assertEqual(code, 1, output)
+        self.assertIn("removed 2 of 2 new file(s)", output)
+        for name in ("later 笔记.md", "mobile/later.json", "extra/later.txt", "kit.py.orig"):
+            self.assertEqual(box.read(name), "mine\n" if not name.endswith(".json") else "{}\n", name)
+        self.assertEqual(box.read("run.log"), "local log\nappended during the run\n")
+        self.assertFalse((box.repo / "test_late.py").exists())
+        self.assertFalse((box.repo / "extra" / "helper.py").exists())
+        self.assertEqual(box.head(), head)
+
+    def test_untracked_file_hidden_by_configuration_stops_the_run(self):
+        box = self.box
+        box.git("config", "status.showUntrackedFiles", "no")
+        write(box.repo / "extra.py", "MY OWN UNCOMMITTED WORK\n")
+        write(box.source / "extra.py", "EXTRA = 1\n")
+        head = box.head()
+        code, output = box.update("--allow-new", "extra.py")
+        self.assertEqual(code, 2, output)
+        self.assertIn("uncommitted changes", output)
+        self.assertIn("extra.py", output)
+        self.assertEqual(box.read("extra.py"), "MY OWN UNCOMMITTED WORK\n")
+        self.assertEqual(box.head(), head)
+
+    def assert_hidden_edit_is_refused(self, flag, label):
+        box = self.box
+        box.git("update-index", flag, "mobile/rules.json")
+        write(box.repo / "mobile" / "rules.json", '{"rules": ["local edit"]}\n')
+        write(box.source / "mobile" / "rules.json", '{"rules": ["v2 from source"]}\n')
+        head = box.head()
+        code, output = box.update()
+        self.assertEqual(code, 2, output)
+        self.assertIn(f"mobile/rules.json  ({label})", output)
+        self.assertEqual(box.read("mobile/rules.json"), '{"rules": ["local edit"]}\n')
+        self.assertEqual(box.head(), head)
+
+    def test_skip_worktree_entry_stops_the_run(self):
+        self.assert_hidden_edit_is_refused("--skip-worktree", "skip-worktree")
+
+    def test_assume_unchanged_entry_stops_the_run(self):
+        self.assert_hidden_edit_is_refused("--assume-unchanged", "assume-unchanged")
+
+    def test_tracked_symbolic_link_is_not_written_through(self):
+        box = self.box
+        if not can_symlink(box.root):
+            self.skipTest("symbolic links are not available")
+        outside = box.root / "outside-precious.txt"
+        write(outside, "precious\n")
+        os.symlink(outside, box.repo / "mobile" / "linked.json")
+        box.git("add", "mobile/linked.json")
+        box.git("commit", "-q", "-m", AUTO_SUBJECT)
+        write(box.source / "mobile" / "linked.json", '{"from": "source"}\n')
+        head = box.head()
+        code, output = box.update()
+        self.assertEqual(code, 2, output)
+        self.assertIn("mobile/linked.json  (a symbolic link", output)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "precious\n")
+        self.assertTrue(os.path.islink(box.repo / "mobile" / "linked.json"))
+        self.assertEqual(box.head(), head)
+
+    def test_ignored_files_are_summarised_by_folder(self):
+        box = self.box
+        for number in range(30):
+            write(box.source / ".venv" / "lib" / f"m{number}.py", "X = 1\n")
+        write(box.source / "kit.py", "OK = True\nVERSION = 2\n")
+        code, output = box.update()
+        self.assertEqual(code, 0, output)
+        self.assertIn("sync:   skipped: .venv/ (30 files)", output)
+        self.assertNotIn("m0.py", output)
+
+
+class InProcessTests(SandboxTestCase):
+    """Run parts of the script inside this process, with the sandbox's environment."""
+
+    def setUp(self):
+        super().setUp()
+        env = mock.patch.dict(os.environ, self.box.env, clear=True)
+        env.start()
+        self.addCleanup(env.stop)
+        self.mod = load_script(self.box.repo / "tools" / "auto_update.py", "auto_update_in_process")
+
+    def test_interrupt_right_after_the_commit_keeps_the_commit(self):
+        box = self.box
+        write(box.source / "new.py", "NEW = 1\n")
+        head = box.head()
+        log = io.StringIO()
+        with mock.patch.object(self.mod, "non_noreply_emails", side_effect=KeyboardInterrupt), \
+                contextlib.redirect_stdout(log):
+            code = self.mod.main(["--source", str(box.source), "--outputs", str(box.outputs),
+                                  "--allow-new", "new.py"])
+        self.assertEqual(code, 3, log.getvalue())
+        self.assertNotIn("rollback:", log.getvalue())
+        self.assertNotEqual(box.head(), head)
+        self.assertEqual(box.read("new.py"), "NEW = 1\n")
+        self.assertEqual(box.status(), "")
+
+    def test_plan_refuses_files_git_status_does_not_show(self):
+        box = self.box
+        write(box.repo / "extra.py", "MY OWN UNCOMMITTED WORK\n")
+        write(box.source / "extra.py", "EXTRA = 1\n")
+        box.git("update-index", "--assume-unchanged", "kit.py")
+        write(box.repo / "kit.py", "OK = True  # local edit\n")
+        write(box.source / "kit.py", "OK = True\nVERSION = 2\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(self.mod.Refused) as caught:
+                self.mod.plan_sync(box.source, ["extra.py"])
+        message = str(caught.exception)
+        self.assertIn("extra.py  (already in the working tree", message)
+        self.assertIn("kit.py  (the working tree copy differs from the last commit)", message)
+        self.assertEqual(box.read("extra.py"), "MY OWN UNCOMMITTED WORK\n")
+        self.assertEqual(box.read("kit.py"), "OK = True  # local edit\n")
+
+    def test_rollback_counts_only_what_it_put_back(self):
+        touched = self.mod.Touched()
+        touched.restore.append(Path("never-tracked.txt"))
+        log = io.StringIO()
+        with contextlib.redirect_stdout(log):
+            self.mod.undo_sync(touched)
+        self.assertIn("restored 0 of 1 tracked file(s)", log.getvalue())
+        self.assertIn("rollback: PROBLEM", log.getvalue())
 
 
 class HandEditTests(SandboxTestCase):
@@ -547,11 +707,26 @@ class PrivacyGateTests(unittest.TestCase):
 
     def test_placeholder_home_paths_pass(self):
         for path in ("C:\\Users\\<USER>\\claude-backups", "C:\\Users\\<你的用户名>\\x", "C:\\Users\\%USERNAME%\\x",
-                     "C:\\Users\\${env:USERNAME}\\x", "/home/user/kit", "/home/runner/work/kit",
+                     "C:\\Users\\${env:USERNAME}\\x", "/Users/user/kit", "/home/runner/work/kit", "/home/alice/x",
                      "/Users/yourname/Library", "/Users/Shared/x", "C:\\Users\\Public\\x", "/home/$USER/x",
                      "https://example.com/Users/" + "zqfake", "~/claude-backups"):
             with self.subTest(path=path):
                 self.assertClean("notes.md", f"path: {path}\n")
+
+    def test_sample_names_are_checked_when_they_are_the_current_account(self):
+        for name in ("Dave", "alice", "John", "demo"):
+            with self.subTest(name=name):
+                patterns = self.mod.identity_patterns([name], [], True)
+                text = "C:\\Users\\" + name + "\\AppData\\Local\\x and /home/" + name.lower() + "/proj\n"
+                labels = [label for _, label, _ in self.mod.scan_text(text, patterns)]
+                self.assertIn("home directory username", labels)
+        with mock.patch.dict(os.environ, {"USERNAME": "Dave"}):
+            self.assertBlocked("notes.md", "Backup lives in C:\\Users\\Dave\\Documents\\kit\n",
+                               "home directory username")
+        for name in ("runner", "root", "vscode"):
+            with self.subTest(name=name):
+                patterns = self.mod.identity_patterns([name], [], True)
+                self.assertEqual(self.mod.scan_text("/home/" + name + "/work/kit\n", patterns), [])
 
     def test_short_account_name_gets_a_home_path_check(self):
         patterns = self.mod.identity_patterns(["li"], [], False)
@@ -582,6 +757,24 @@ class PrivacyGateTests(unittest.TestCase):
 
     def test_files_that_gitignore_keeps_out_are_not_scanned(self):
         self.assertClean("run.log", "node: " + link("vless", "0123456789abcdef@host.example.com:443") + "\n")
+
+    def test_ignored_private_copies_at_the_root_do_not_block_until_added(self):
+        write(self.repo / "research-reports" / "a.md", "local copy\n")
+        write(self.repo / "THIRD-PARTY-NOTICE.md", "old notice\n")
+        blocked, _ = self.gate()
+        self.assertIsNone(blocked)
+        self.git("add", "-f", "research-reports/a.md")
+        blocked, _ = self.gate()
+        self.assertIsNotNone(blocked)
+        self.assertIn("research-reports/a.md", blocked)
+
+    def test_symbolic_link_is_scanned_as_the_path_it_points_to(self):
+        if not can_symlink(self.repo):
+            self.skipTest("symbolic links are not available")
+        os.symlink("/home/" + "zqfake" + "/private/notes.md", self.repo / "notes-link.md")
+        blocked, _ = self.gate()
+        self.assertIsNotNone(blocked)
+        self.assertIn("notes-link.md:1: user home path", blocked)
 
     def test_private_names_are_blocked_at_any_depth_once_tracked(self):
         write(self.repo / "docs" / "research-reports" / "a.md", "copied article\n")

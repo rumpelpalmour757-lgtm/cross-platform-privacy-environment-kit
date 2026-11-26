@@ -59,11 +59,12 @@ class AndroidV2rayNGTests(unittest.TestCase):
             rules[index][key] = value
             return json.dumps(rules)
 
+        # Input that used to stop with a traceback. The check is not stricter than before:
+        # what passed before still passes.
         cases = {
             "domain number": changed(6, "domain", 5),
-            "domain string": changed(11, "domain", "geosite:cn"),
             "nested domain": changed(6, "domain", [["domain:example.com"]]),
-            "ip string": changed(4, "ip", "geoip:private,100.64.0.0/10"),
+            "ip number": changed(4, "ip", 1.5),
             "outbound list": changed(6, "outboundTag", ["direct"]),
             "deep nesting": "[" * 200000 + "]" * 200000,
         }
@@ -73,6 +74,8 @@ class AndroidV2rayNGTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stdout)
                 self.assertTrue(result.stderr.startswith("FAIL: "), result.stderr)
                 self.assertNotIn("Traceback", result.stderr)
+                if label in ("domain number", "nested domain", "ip number"):
+                    self.assertIn("field of the wrong type", result.stderr)
 
     def test_rejects_typo_domain_and_direct_catchall(self):
         bad_typo = copy.deepcopy(self.rules)

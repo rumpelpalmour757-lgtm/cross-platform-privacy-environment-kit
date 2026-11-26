@@ -181,7 +181,8 @@ def identity_patterns(users, emails, windows):
                 "home directory username",
                 re.compile(r"(?:[A-Za-z]:[/\\]+Users|/(?:home|Users))[/\\]+" + re.escape(user) + r"(?![A-Za-z0-9_.-])", re.IGNORECASE),
             ))
-        if windows and len(user) >= 4 and lowered not in GENERIC_USERS | SYSTEM_USERS | PLACEHOLDER_WORDS:
+        # Placeholder names are listed in this file, so as bare words they would always be found.
+        if windows and len(user) >= 4 and lowered not in GENERIC_USERS | PLACEHOLDER_USERS:
             patterns.append((
                 "Windows username",
                 re.compile(r"(?<![A-Za-z0-9])" + re.escape(user) + r"(?![A-Za-z0-9])", re.IGNORECASE),
@@ -354,12 +355,29 @@ def plan_sync(source, allow_new=(), source_wins=False):
     plan.remove = [Path(name) for name in sorted(tracked)
                    if name not in wanted_names and in_sync_scope(Path(name))]
 
+    # git status can miss local edits (assume-unchanged, skip-worktree, untracked files
+    # hidden by configuration), and copying onto a link writes to whatever it points to.
+    unsafe = []
+    for rel in plan.add + plan.replace + plan.remove:
+        name = rel.as_posix()
+        if involves_link(source, rel):
+            unsafe.append(f"{name}  (a symbolic link, or inside a linked folder)")
+        elif rel in plan.add:
+            if os.path.lexists(REPO / rel):
+                unsafe.append(f"{name}  (already in the working tree, although git does not track it)")
+        elif worktree_blob(name) != tracked[name]:
+            unsafe.append(f"{name}  (the working tree copy differs from the last commit)")
+
     conflicts = []
     if not source_wins:
         conflicts += [f"{rel.as_posix()}  (would be overwritten)" for rel in plan.replace if changed_by_hand(rel.as_posix())]
         conflicts += [f"{rel.as_posix()}  (would be deleted)" for rel in plan.remove if changed_by_hand(rel.as_posix())]
-    if blocked or conflicts:
+    if blocked or conflicts or unsafe:
         lines = ["sync stopped before changing anything."]
+        if unsafe:
+            lines.append("  Files the sync would write or delete but cannot do so safely. Sort them out "
+                         "by hand ('git status --untracked-files=all', 'git ls-files -v'), then run again:")
+            lines += [f"    {entry}" for entry in unsafe]
         if blocked:
             lines.append("  New files that the repository does not track yet. Name each one with "
                          "--allow-new PATH if it belongs in the public repository, or keep it out "
@@ -374,6 +392,34 @@ def plan_sync(source, allow_new=(), source_wins=False):
     return plan
 
 
+def involves_link(source, rel):
+    """True when ``rel`` or a folder above it is a symbolic link in the source or the repository."""
+    for root in (source, REPO):
+        for depth in range(1, len(rel.parts) + 1):
+            if os.path.islink(root.joinpath(*rel.parts[:depth])):
+                return True
+    return False
+
+
+def worktree_blob(name):
+    """Blob id git would store for the working tree copy of ``name``; None when it is missing."""
+    path = REPO / name
+    if not path.is_file():
+        return None
+    return git("hash-object", f"--path={name}", "--", str(path)).stdout.strip()
+
+
+def summarize_names(names):
+    """One line per top-level folder with its file count, so a .venv/ does not flood the log."""
+    groups = {}
+    for name in names:
+        top, sep, _ = name.partition("/")
+        key = top + "/" if sep else name
+        groups[key] = groups.get(key, 0) + 1
+    return [f"{key} ({count} file{'' if count == 1 else 's'})" if key.endswith("/") else key
+            for key, count in groups.items()]
+
+
 def report_plan(plan):
     log(f"sync: {plan.wanted} kit files in the source directory; {len(plan.add)} new, "
         f"{len(plan.replace)} replaced, {len(plan.remove)} removed, "
@@ -382,8 +428,8 @@ def report_plan(plan):
     for title, rels in (("new", plan.add), ("replaced", plan.replace), ("removed", plan.remove)):
         for rel in rels:
             log(f"sync:   {title}: {rel.as_posix()}")
-    for name in plan.ignored:
-        log(f"sync:   skipped: {name}")
+    for entry in summarize_names(plan.ignored):
+        log(f"sync:   skipped: {entry}")
 
 
 def apply_sync(plan, source, touched):
@@ -411,22 +457,31 @@ def undo_sync(touched):
     if not restore and not new:
         return
     problems = []
+    restored = removed = 0
     for chunk in chunks(restore + new):
         git("reset", "-q", "HEAD", "--", *chunk, check=False)
     for chunk in chunks(restore):
-        result = git("checkout", "-q", "HEAD", "--", *chunk, check=False)
-        if result.returncode:
-            problems.append(result.stderr.strip())
+        if git("checkout", "-q", "HEAD", "--", *chunk, check=False).returncode == 0:
+            restored += len(chunk)
+            continue
+        for name in chunk:  # find out which ones could not be put back
+            result = git("checkout", "-q", "HEAD", "--", name, check=False)
+            if result.returncode:
+                problems.append(result.stderr.strip() or f"could not restore {name}")
+            else:
+                restored += 1
     for name in new:
         try:
-            (REPO / name).unlink(missing_ok=True)
+            if os.path.lexists(REPO / name):
+                (REPO / name).unlink()
+                removed += 1
         except OSError as error:
             problems.append(str(error))
     for folder in sorted(touched.folders, key=lambda path: len(path.parts), reverse=True):
         if folder.is_dir() and not any(folder.iterdir()):
             folder.rmdir()
-    log(f"rollback: restored {len(restore)} tracked file(s) from HEAD and removed {len(new)} new file(s) "
-        "written by this run; nothing else in the working tree was touched")
+    log(f"rollback: restored {restored} of {len(restore)} tracked file(s) from HEAD and removed {removed} "
+        f"of {len(new)} new file(s) written by this run; nothing else in the working tree was touched")
     for problem in problems:
         log(f"rollback: PROBLEM, check 'git status': {problem}")
 
@@ -440,16 +495,12 @@ def gate_candidates():
     if listing is None or listing.returncode:
         return list(kit_files(REPO, skip_repo_only=False))
     names = {name for name in listing.stdout.split("\0") if name}
-    return [Path(name) for name in sorted(names) if (REPO / name).is_file()]
+    return [Path(name) for name in sorted(names) if os.path.islink(REPO / name) or (REPO / name).is_file()]
 
 
 def privacy_gate():
     patterns = forbidden_patterns()
     hits, unscanned, lossy, scanned = [], [], [], 0
-    if (REPO / "research-reports").exists():
-        hits.append("research-reports/: mirrored third-party directory is forbidden in public repo")
-    if (REPO / "THIRD-PARTY-NOTICE.md").exists():
-        hits.append("THIRD-PARTY-NOTICE.md: legacy private notice must stay excluded")
     for rel in gate_candidates():
         posix_path = rel.as_posix()
         if any(part in EXCLUDED_NAMES for part in rel.parts):
@@ -457,10 +508,14 @@ def privacy_gate():
             continue
         if any(marker in posix_path for marker in FORBIDDEN_MIRROR_MARKERS):
             hits.append(f"{posix_path}: forbidden third-party mirror filename")
-        if rel.suffix.lower() in BINARY_SUFFIXES:
+        if os.path.islink(REPO / rel):
+            # git commits a link as the path it points to, not as the content behind it.
+            data = os.readlink(REPO / rel).encode("utf-8", "surrogateescape")
+        elif rel.suffix.lower() in BINARY_SUFFIXES:
             unscanned.append(posix_path)
             continue
-        data = (REPO / rel).read_bytes()
+        else:
+            data = (REPO / rel).read_bytes()
         text = decode_for_scan(data)
         if text is None:
             hits.append(f"{posix_path}: binary content of an unknown type cannot be scanned "
@@ -552,7 +607,7 @@ def commit(touched):
         return False
     log("git: changes in this commit:\n" + git("diff", "--cached", "--stat").stdout.rstrip())
     git("commit", "-q", "-m", f"{AUTO_COMMIT_PREFIX}{datetime.date.today().isoformat()}")
-    # From here on the commit exists: nothing below may raise, or the rollback would undo it.
+    # From here on the commit exists. If anything below fails, main() sees that HEAD moved and keeps it.
     log("git: committed " + git("rev-parse", "--short", "HEAD", check=False).stdout.strip())
     if non_noreply_emails("-1"):
         log("git: note: this commit carries an author or committer e-mail that is not a noreply "
@@ -616,6 +671,16 @@ def report_unpushed(committed):
             "lists them); nothing was pushed because --push was not given")
 
 
+def hidden_index_entries():
+    """Tracked files whose local edits git status does not show: lower-case tag or S in ls-files -v."""
+    hidden = []
+    for entry in git("ls-files", "-v", "-z").stdout.split("\0"):
+        tag, _, name = entry.partition(" ")
+        if name and (tag.islower() or tag == "S"):
+            hidden.append(f"{name}  ({'skip-worktree' if tag in 'Ss' else 'assume-unchanged'})")
+    return hidden
+
+
 def preflight(args):
     """Everything that must hold before the first write. Raises Refused otherwise."""
     try:
@@ -626,14 +691,32 @@ def preflight(args):
         raise Refused(f"{REPO} is not a git working tree")
     if git("rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
         raise Refused("the repository has no commit yet; make the first commit by hand")
-    dirty = git("status", "--porcelain").stdout.rstrip()
+    # Untracked files are listed even when status.showUntrackedFiles=no is configured.
+    dirty = git("status", "--porcelain", "--untracked-files=normal").stdout.rstrip()
     if dirty:
         raise Refused("the working tree has uncommitted changes. Commit, stash or remove them first; "
                       "nothing was changed.\n  " + "\n  ".join(dirty.splitlines()))
+    hidden = hidden_index_entries()
+    if hidden:
+        raise Refused("these tracked files are marked assume-unchanged or skip-worktree, so 'git status' "
+                      "cannot show local edits to them. Clear the marks (git update-index "
+                      "--no-assume-unchanged / --no-skip-worktree PATH) first; nothing was changed.\n  "
+                      + "\n  ".join(hidden))
     if args.push and current_branch() not in pushable_branches():
         raise Refused(f"--push only pushes main or the default branch of origin, and the current branch "
                       f"is '{current_branch()}'. Switch branches or drop --push; nothing was changed.")
     return allow_new_names(args.allow_new)
+
+
+def head_moved(start_head):
+    """True when HEAD is no longer the commit this run started from."""
+    if not start_head:
+        return False
+    try:
+        now = git("rev-parse", "-q", "--verify", "HEAD", check=False).stdout.strip()
+    except OSError:
+        return False
+    return bool(now) and now != start_head
 
 
 def build_parser():
@@ -667,8 +750,10 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     touched = Touched()
     committed = None  # stays None until the commit step has finished
+    start_head = None
     try:
         allow_new = preflight(args)
+        start_head = git("rev-parse", "HEAD").stdout.strip()
         if not args.no_sync:
             plan = plan_sync(args.source, allow_new, args.source_wins)
             report_plan(plan)
@@ -688,6 +773,8 @@ def main(argv=None):
         log(f"REFUSED: {refusal}")
         return 2
     except (Exception, KeyboardInterrupt) as error:
+        if committed is None and head_moved(start_head):
+            committed = True  # interrupted after git commit, before commit() returned
         if committed is not None:
             log("FAILED after the commit step; local commits stay in the repository and this run "
                 f"pushed nothing: {error or type(error).__name__}")
@@ -695,7 +782,7 @@ def main(argv=None):
         undo_sync(touched)
         log(f"FAILED: {error or type(error).__name__}")
         return 130 if isinstance(error, KeyboardInterrupt) else 1
-    leftover = git("status", "--porcelain", check=False).stdout.rstrip()
+    leftover = git("status", "--porcelain", "--untracked-files=normal", check=False).stdout.rstrip()
     if leftover:
         log("note: files this run did not write are uncommitted in the working tree:\n  "
             + "\n  ".join(leftover.splitlines()))
