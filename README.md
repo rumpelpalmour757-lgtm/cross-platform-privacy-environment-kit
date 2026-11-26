@@ -206,7 +206,7 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 
 - **跨平台离线单元测试**：全套 `test_*.py`（项数以运行结果为准），覆盖统一三态体检与可打印 HTML 渲染/转义、本地 MCP 桥接脱敏盘点、路由生成与校验、Windows 断网开关与 LAN DNS 规划器、配置快照安全边界、Android/iOS 规则静态校验、自动同步脚本在临时仓库里的同步、还原与隐私闸门、MIT 与零镜像回归检查、全仓 Markdown 相对链接与发布包断链检查，以及通过 Node.js 对 `docs/app.js` 与 Python `build_routing.py` / `build_kill_switch.py` 的一致性交叉对账（平台专属用例按运行环境显式跳过）。v0.4.1 在 Windows Python 3.13 与 Linux（WSL Ubuntu）Python 3 下跑过；v0.4.2 的改动只在 Linux 上用 Python 3.11、3.12、3.13 跑过全套，还没有在 Windows 上跑过。
 - **PowerShell 语法与逻辑核验**：所有 `.ps1` 脚本经解析与逻辑核查，确认 DHCP 漏填拦截与 PowerShell 5.1 严格模式空数组分支已修复；断网开关补集输出与 Python 规划器一致。v0.4.2 没有改 `.ps1`，已确认还没修的问题见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 末尾的「已知问题」。
-- **本机四层无侵入实测与可视化核验**：在隔离临时目录下完成 CLI `2.1.330` 冷启动归零对照、MSIX 安装包离线静态拆检与 39 目标路由分流对账；并用无头浏览器实拍核验了 `docs/index.html` 明暗主题与矢量图的渲染排版。
+- **本机四层无侵入实测与可视化核验**：在隔离临时目录下完成 CLI `2.1.330` 冷启动归零对照、MSIX 安装包离线静态拆检与 39 目标路由分流对账；v0.4.1 时用无头浏览器实拍核验了 `docs/index.html` 明暗主题与矢量图的渲染排版，v0.4.2 改过的页面和架构图没有在浏览器里重新看过。
 - **公开前隐私与历史核查**：公开前重建单提交干净历史，确认仓库工作区与 Git 历史中均无本机用户名路径、个人代理节点链接、第三方原文镜像或微信转发原文。
 
 ### 没做的
@@ -218,7 +218,7 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 
 ## 离线自检命令
 
-在仓库根目录执行以下命令即可离线复核全部测试（包含 UI 算法与文档链接回归检查）。只能在 Windows 上跑的用例，在 Linux 和 macOS 上会显示为跳过；发布包里没有 `tools/`，自动同步相关的用例在包里也会跳过，这都不算失败：
+在仓库根目录执行以下命令即可离线复核全部测试（包含 UI 算法与文档链接回归检查）。只能在 Windows 上跑的用例，在 Linux 和 macOS 上会显示为跳过；发布包里没有 `tools/`、`docs/releases/` 和 `.gitattributes`，自动同步相关的用例和几项只在完整仓库里才有意义的检查在包里也会跳过，这都不算失败：
 
 ```bash
 python -B -m unittest discover -p "test_*.py" -v

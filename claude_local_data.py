@@ -190,7 +190,7 @@ def _string_has_secret(text):
         return True
     for pattern in (ASSIGNMENT_PATTERN, HEADER_PATTERN):
         for match in pattern.finditer(literal):
-            if _secret_named(match.group(1), broad=True) and _is_literal_secret_value(match.group(2), True):
+            if _secret_named(match.group(1), broad=True) and _is_literal_secret_value(match.group(2), in_command=True):
                 return True
     return False
 
