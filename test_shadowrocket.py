@@ -33,6 +33,14 @@ class ShadowrocketTests(unittest.TestCase):
                     with self.assertRaisesRegex(ValueError, "missing required local direct"):
                         validate("\n".join(lines[:index] + lines[index + 1:]))
 
+    def test_extra_general_setting_failure_says_what_is_checked(self):
+        with_dns = self.profile.replace(
+            "hijack-dns = *:53\n", "hijack-dns = *:53\ndns-server = https://dns.example.com/dns-query\n",
+        )
+        self.assertNotEqual(with_dns, self.profile)
+        with self.assertRaisesRegex(ValueError, "only accepts the bundled template's ipv6 = true and hijack-dns"):
+            validate(with_dns)
+
     def test_cli_rejects_unsafe_ipv6_false_and_incomplete_profiles(self):
         with tempfile.TemporaryDirectory() as temporary:
             profile = Path(temporary) / "incomplete.conf"

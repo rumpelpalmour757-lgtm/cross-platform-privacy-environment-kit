@@ -13,6 +13,9 @@ import stat
 
 # Client state files grow with per-project history; read them up to this size.
 MAX_JSON_BYTES = 32 * 1024 * 1024
+UNREAD_STATES = ("not_regular_file", "too_large", "invalid_json", "unreadable")
+FLAG_ON_VALUES = ("1", "true", "yes")
+FLAG_OFF_VALUES = ("0", "false", "no", "off")
 
 CLI_ANTI_TELEMETRY_KEYS = (
     "DISABLE_TELEMETRY",
@@ -89,11 +92,12 @@ def _has_msix_claude(local_appdata):
 
 
 def _load_json_file(file_path):
-    """Return (data, state); state is "absent", "read", or "unreadable".
+    """Return (data, state) so callers keep "nothing configured" apart from "not checked".
 
-    "unreadable" covers a file that exists but is a symbolic link or other
-    non-regular entry, is larger than the limit, or is not valid JSON, so that
-    callers can keep "nothing configured" apart from "could not be checked".
+    state is "absent" or "read", or one of the states in UNREAD_STATES for a file
+    that exists but was not read: "not_regular_file" (symbolic link, directory, or
+    other special entry), "too_large", "invalid_json", or "unreadable" (could not
+    be opened or listed).
     """
     try:
         info = os.lstat(file_path)
@@ -101,13 +105,20 @@ def _load_json_file(file_path):
         return None, "absent"
     except (OSError, ValueError):
         return None, "unreadable"
-    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JSON_BYTES:
-        return None, "unreadable"
+    if not stat.S_ISREG(info.st_mode):
+        return None, "not_regular_file"
+    if info.st_size > MAX_JSON_BYTES:
+        return None, "too_large"
     try:
         raw = Path(file_path).read_text(encoding="utf-8-sig")
-        return json.loads(raw), "read"
-    except (OSError, UnicodeError, ValueError, RecursionError):
+    except OSError:
         return None, "unreadable"
+    except UnicodeError:
+        return None, "invalid_json"
+    try:
+        return json.loads(raw), "read"
+    except (ValueError, RecursionError):
+        return None, "invalid_json"
 
 
 def _settings_env(data):
@@ -130,7 +141,28 @@ def _project_scoped_mcp_count(data):
 
 
 def _flag_enabled(value):
-    return str(value or "").strip().lower() in ("1", "true", "yes")
+    return str(value or "").strip().lower() in FLAG_ON_VALUES
+
+
+def _flag_undetermined(process_value, settings_value):
+    """True when the values read do not settle whether a switch is on.
+
+    That is a value outside the plain on/off spellings, or the process
+    environment and settings.json disagreeing: which of the two the client
+    applies last is not checked here.
+    """
+    states = set()
+    for value in (process_value, settings_value):
+        text = str(value or "").strip().lower()
+        if not text:
+            continue
+        if text in FLAG_ON_VALUES:
+            states.add(True)
+        elif text in FLAG_OFF_VALUES:
+            states.add(False)
+        else:
+            return True
+    return len(states) > 1
 
 
 def collect_boundary_audit(system=None, home=None, env=None, now_local=None, config_dir=None, project_dir=None):
@@ -178,17 +210,17 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
     if desktop_config_dir is not None:
         data, state = _load_json_file(desktop_config_dir / "claude_desktop_config.json")
         desktop_mcp_count = _mcp_entry_count(data)
-        desktop_mcp_unreadable = int(state == "unreadable")
+        desktop_mcp_unreadable = int(state in UNREAD_STATES)
     cli_mcp_count = _mcp_entry_count(settings_data)
-    cli_mcp_unreadable = int(settings_state == "unreadable")
+    cli_mcp_unreadable = int(settings_state in UNREAD_STATES)
     for state_file in cli_state_files:
         data, state = _load_json_file(state_file)
         cli_mcp_count += _mcp_entry_count(data) + _project_scoped_mcp_count(data)
-        cli_mcp_unreadable += int(state == "unreadable")
+        cli_mcp_unreadable += int(state in UNREAD_STATES)
     if project_dir is not None:
         data, state = _load_json_file(Path(project_dir) / ".mcp.json")
         cli_mcp_count += _mcp_entry_count(data)
-        cli_mcp_unreadable += int(state == "unreadable")
+        cli_mcp_unreadable += int(state in UNREAD_STATES)
     local_mcp_bridges = {
         "claudeDesktopMcpConfigured": desktop_mcp_count > 0,
         "claudeDesktopMcpServerCount": desktop_mcp_count,
@@ -214,6 +246,10 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
         f"{key}_enabled": _flag_enabled(env_map.get(key) or settings_env.get(key))
         for key in CLI_ANTI_TELEMETRY_KEYS
     }
+    cli_anti_telemetry_undetermined = [
+        key for key in CLI_ANTI_TELEMETRY_KEYS
+        if _flag_undetermined(env_map.get(key), settings_env.get(key))
+    ]
 
     desktop_present = desktop_appdata_present or desktop_msix_present
     cli_present = _safe_exists(cli_dir) or cli_state_present
@@ -252,8 +288,8 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
     if unreadable_configs:
         warnings.append(
             f"{unreadable_configs} local client configuration file(s) exist but could not be read "
-            "(symbolic link, oversized, or not valid JSON); counts and switch states that depend on "
-            "those files are incomplete."
+            "(symbolic link or other non-regular file, oversized, not valid JSON, or not readable); counts "
+            "and switch states that depend on those files are incomplete."
         )
 
     return {
@@ -276,6 +312,7 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
         },
         "environmentVariableFlags": env_flags,
         "cliAntiTelemetryFlags": cli_anti_telemetry,
+        "cliAntiTelemetryUndetermined": cli_anti_telemetry_undetermined,
         "cliSettingsReadState": settings_state,
         "localMcpBridges": local_mcp_bridges,
         "boundaryNotes": warnings or [

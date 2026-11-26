@@ -1,4 +1,5 @@
 :root {
+  color-scheme: light;
   --bg: #f6f4ee;
   --bg-elevated: #fffefb;
   --bg-soft: #f1f6fa;
@@ -36,6 +37,7 @@
 }
 
 [data-theme="dark"] {
+  color-scheme: dark;
   --bg: #101726;
   --bg-elevated: #172136;
   --bg-soft: #1d2a44;
@@ -224,6 +226,12 @@ code {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
   color: #ffffff;
+}
+
+/* 深色主题的主按钮底色是浅蓝，白字对比度不到 3:1，改用深色字（约 7:1）。 */
+[data-theme="dark"] .btn-primary,
+[data-theme="dark"] .btn-primary:hover {
+  color: #0b111e;
 }
 
 .btn-navy {
@@ -1019,6 +1027,10 @@ th {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
   * {
     animation: none !important;
     transition: none !important;

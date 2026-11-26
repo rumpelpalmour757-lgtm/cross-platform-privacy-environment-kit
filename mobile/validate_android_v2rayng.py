@@ -22,9 +22,18 @@ FORBIDDEN_TYPO_DOMAINS = frozenset({"domain:claudemcpclient.com", "claudemcpclie
 REQUIRED_LAN_IPS = frozenset({"geoip:private", "100.64.0.0/10"})
 
 
+def _string_list(rule, key, index):
+    value = rule.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"Rule {index + 1} field {key!r} must be a list of strings.")
+    return value
+
+
 def validate_v2rayng_rules(rules):
     if not isinstance(rules, list) or len(rules) < 8:
-        raise ValueError("Expected a non-empty Android v2rayNG routing rule list.")
+        raise ValueError("Expected a JSON array of at least 8 Android v2rayNG routing rules.")
 
     udp443_idx = None
     v6_guard_idx = None
@@ -39,11 +48,11 @@ def validate_v2rayng_rules(rules):
         if rule.get("enabled") is not True:
             raise ValueError(f"Rule {index + 1} must be enabled.")
         outbound = rule.get("outboundTag")
-        if outbound not in {"proxy", "direct", "block"}:
+        if not isinstance(outbound, str) or outbound not in {"proxy", "direct", "block"}:
             raise ValueError(f"Rule {index + 1} has invalid outboundTag.")
 
-        domains = rule.get("domain") or []
-        ips = rule.get("ip") or []
+        domains = _string_list(rule, "domain", index)
+        ips = _string_list(rule, "ip", index)
         for dom in domains:
             if dom in FORBIDDEN_TYPO_DOMAINS:
                 raise ValueError(f"Rule {index + 1} contains known typo domain: {dom}")
@@ -73,7 +82,7 @@ def validate_v2rayng_rules(rules):
     if v6_guard_idx is None:
         raise ValueError("Missing Anthropic IPv6 502 guard block rule.")
     if claude_dom_idx is None:
-        raise ValueError(f"Missing complete {len(CLAUDE_ECOSYSTEM_DOMAINS)}-domain Claude ecosystem proxy rule.")
+        raise ValueError(f"Missing complete {len(CLAUDE_ECOSYSTEM_DOMAINS)}-item Claude ecosystem proxy rule.")
     if claude_v4_idx is None:
         raise ValueError("Missing Anthropic IPv4 CIDR (160.79.104.0/21) proxy rule.")
     if lan_ip_idx is None:
@@ -116,9 +125,16 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         count = validate_v2rayng_rules(read_safe_json(args.rule_file))
-    except (OSError, SnapshotError, UnicodeError, ValueError) as exc:
+    except RecursionError:
+        parser.exit(1, "FAIL: Rule file is nested too deeply.\n")
+    except (OSError, SnapshotError, TypeError, UnicodeError, ValueError) as exc:
         parser.exit(1, f"FAIL: {exc}\n")
-    print(f"PASS: {count} rules; UDP/443 block + Anthropic IPv6 guard + {len(CLAUDE_ECOSYSTEM_DOMAINS)} Claude domains + IPv4 CIDR + proxy fallback.")
+    print(
+        f"PASS: {count} rules; found UDP/443 block, Anthropic IPv6 guard, "
+        f"{len(CLAUDE_ECOSYSTEM_DOMAINS)}-item Claude proxy rule, IPv4 CIDR proxy rule and LAN direct rule. "
+        "Structural check only: rules are not compared one by one with the bundled file, "
+        "and no explicit fallback rule is required."
+    )
     return 0
 
 

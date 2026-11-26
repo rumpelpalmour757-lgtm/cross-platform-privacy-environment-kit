@@ -4,17 +4,22 @@ Steps: clean working tree check -> sync plan -> sync -> privacy gate -> unit tes
 -> optional allowlist preview -> git commit -> release ZIP -> git push (only with --push).
 
 Protective rules:
-- Nothing starts while the working tree has uncommitted changes.
+- Nothing starts while the working tree has uncommitted changes, or while tracked files are
+  marked assume-unchanged or skip-worktree (git status cannot show local edits to those).
 - A failure before the commit puts back only the files this run wrote, replaced or
   removed. Nothing else in the working tree is touched.
 - A tracked file whose latest commit was made by hand is not overwritten or deleted
   by the source directory unless --source-wins is given.
-- A file the repository does not track yet is only added when named with --allow-new.
+- A file the repository does not track yet is only added when named with --allow-new, and
+  never over a file of that name that is already in the working tree.
+- The sync stops before writing when a file it would add, replace or delete is a symbolic
+  link (or sits in a linked folder), or differs in the working tree from the last commit.
 - Local tool output and anything .gitignore ignores is never copied in.
 - Nothing is pushed unless --push is given.
 
 Exit codes: 0 done; 1 failed, this run's file changes were put back; 2 refused before
-changing anything; 3 committed locally but packaging or pushing failed.
+changing anything; 3 failed or interrupted once the commit was made (packaging or pushing),
+local commits kept; 130 interrupted before the commit, this run's file changes were put back.
 """
 import argparse
 import codecs
@@ -68,16 +73,35 @@ GENERIC_USERS = {
     "runner", "runneradmin", "root", "ubuntu", "admin", "administrator",
     "user", "github", "vscode", "claude", "celeste", "proxy", "privacy",
 }
-# Names that stand for "whoever you are" in documentation and test data.
-PLACEHOLDER_USERS = GENERIC_USERS | {
+# Built-in, CI and container accounts and shared profile folders. Only these skip the
+# home path check for the account that runs the gate: their home paths show up in CI
+# logs and examples and say nothing about a person.
+SYSTEM_USERS = {
+    "runner", "runneradmin", "root", "ubuntu", "administrator", "user", "vscode", "claude",
+    "codespace", "docker", "node", "linuxbrew", "debian", "ec2-user", "azureuser",
+    "public", "default", "shared", "all",
+}
+# Sample person names used in documentation and test data.
+PLACEHOLDER_NAMES = {
+    "alice", "bob", "carol", "dave", "eve", "mallory", "jdoe", "john", "jane", "johndoe", "janedoe",
+}
+# Words that stand for "whoever you are" in documentation and test data.
+PLACEHOLDER_WORDS = {
+    "admin", "app", "pi", "guest",
     "username", "users", "you", "your", "yourname", "your-name", "your_name", "youruser",
     "yourusername", "name", "me", "myname", "someone", "somebody", "example", "sample",
-    "demo", "test", "tester", "testuser", "foo", "bar", "baz", "alice", "bob", "carol",
-    "dave", "eve", "mallory", "jdoe", "john", "jane", "johndoe", "janedoe", "public",
-    "default", "shared", "guest", "all", "codespace", "docker", "app", "node", "pi",
-    "linuxbrew", "debian", "xxx", "你的用户名", "用户名", "某用户",
+    "demo", "test", "tester", "testuser", "foo", "bar", "baz",
+    "xxx", "你的用户名", "用户名", "用户", "某用户", "名字", "你的名字",
 }
-PLACEHOLDER_SECRETS = {"pass", "password", "passwd", "pwd", "secret", "token", "密码", "口令"}
+# A home path with one of these names is not private, unless it is the name of the
+# account that runs the gate (identity_patterns checks that one separately).
+PLACEHOLDER_USERS = SYSTEM_USERS | PLACEHOLDER_NAMES | PLACEHOLDER_WORDS
+# File types that look like the end of an e-mail address in names such as "logo@2x.png".
+NOT_EMAIL_SUFFIXES = {"png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "css", "js"}
+PLACEHOLDER_SECRETS = {
+    "pass", "password", "passwd", "pwd", "secret", "token", "yourpassword", "your-password",
+    "your_password", "changeme", "密码", "口令",
+}
 ALLOWED_EMAIL_DOMAINS = {"example.com", "example.org", "example.net", "users.noreply.github.com"}
 ALLOWED_EMAIL_DOMAIN_SUFFIXES = (
     ".example", ".invalid", ".test", ".localhost", ".example.com", ".example.org", ".example.net")
@@ -122,7 +146,8 @@ def run(cmd, cwd=None, check=True, stdin=None):
 
 
 def git(*args, check=True, stdin=None):
-    return run(["git", *args], check=check, stdin=stdin)
+    # Paths are always literal: a file named "notes[1].md" must not also match "notes1.md".
+    return run(["git", "--literal-pathspecs", *args], check=check, stdin=stdin)
 
 
 def chunks(items, size=50):
@@ -150,11 +175,13 @@ def local_identity():
 def identity_patterns(users, emails, windows):
     patterns = []
     for user in users:
-        patterns.append((
-            "home directory username",
-            re.compile(r"(?:[A-Za-z]:[/\\]+Users|/(?:home|Users))[/\\]+" + re.escape(user) + r"(?![A-Za-z0-9_.-])", re.IGNORECASE),
-        ))
-        if windows and len(user) >= 4 and user.lower() not in GENERIC_USERS:
+        lowered = user.lower()
+        if lowered not in SYSTEM_USERS:
+            patterns.append((
+                "home directory username",
+                re.compile(r"(?:[A-Za-z]:[/\\]+Users|/(?:home|Users))[/\\]+" + re.escape(user) + r"(?![A-Za-z0-9_.-])", re.IGNORECASE),
+            ))
+        if windows and len(user) >= 4 and lowered not in GENERIC_USERS | SYSTEM_USERS | PLACEHOLDER_WORDS:
             patterns.append((
                 "Windows username",
                 re.compile(r"(?<![A-Za-z0-9])" + re.escape(user) + r"(?![A-Za-z0-9])", re.IGNORECASE),
@@ -166,7 +193,7 @@ def identity_patterns(users, emails, windows):
             local = local.split("+", 1)[-1]  # "<id>+<login>": the login often starts the real address
         elif "noreply" in email.lower():
             continue
-        if len(local) >= 4:
+        if len(local) >= 4 and local.lower() not in PLACEHOLDER_USERS:
             patterns.append(("account e-mail prefix", re.compile(re.escape(local) + r"@", re.IGNORECASE)))
     return patterns
 
@@ -191,7 +218,8 @@ def is_placeholder_secret(secret):
 def is_allowed_email(local, domain):
     local, domain = local.lower(), domain.lower()
     return (local in ALLOWED_EMAIL_LOCALS or domain in ALLOWED_EMAIL_DOMAINS
-            or domain.endswith(ALLOWED_EMAIL_DOMAIN_SUFFIXES))
+            or domain.endswith(ALLOWED_EMAIL_DOMAIN_SUFFIXES)
+            or domain.rsplit(".", 1)[-1] in NOT_EMAIL_SUFFIXES)
 
 
 def scan_text(text, patterns):
@@ -262,7 +290,8 @@ def ignored_by_git(names):
     """Return the paths that .gitignore keeps out of commits."""
     if not names:
         return set()
-    result = git("check-ignore", "-z", "--stdin", check=False, stdin="\0".join(names) + "\0")
+    # check-ignore reads plain paths and refuses the --literal-pathspecs option.
+    result = run(["git", "check-ignore", "-z", "--stdin"], check=False, stdin="\0".join(names) + "\0")
     if result.returncode not in (0, 1):
         raise RuntimeError(f"git check-ignore failed:\n{result.stderr}")
     return {name for name in result.stdout.split("\0") if name}
@@ -523,11 +552,18 @@ def commit(touched):
         return False
     log("git: changes in this commit:\n" + git("diff", "--cached", "--stat").stdout.rstrip())
     git("commit", "-q", "-m", f"{AUTO_COMMIT_PREFIX}{datetime.date.today().isoformat()}")
-    log("git: committed " + git("rev-parse", "--short", "HEAD").stdout.strip())
-    if "noreply" not in git("log", "-1", "--format=%ae %ce").stdout.lower():
-        log("git: note: this commit carries an author e-mail that is not a noreply address; "
-            "it becomes public when the commit is pushed")
+    # From here on the commit exists: nothing below may raise, or the rollback would undo it.
+    log("git: committed " + git("rev-parse", "--short", "HEAD", check=False).stdout.strip())
+    if non_noreply_emails("-1"):
+        log("git: note: this commit carries an author or committer e-mail that is not a noreply "
+            "address; it becomes public when the commit is pushed")
     return True
+
+
+def non_noreply_emails(*revisions):
+    """Author and committer e-mails in these commits that are not noreply addresses."""
+    listing = git("log", "--format=%ae%n%ce", *revisions, check=False).stdout.split()
+    return sorted({email for email in listing if "noreply" not in email.lower()})
 
 
 def current_branch():
@@ -558,6 +594,11 @@ def push():
     if unpushed_count(branch) == 0:
         log("git: origin already up to date")
         return
+    if non_noreply_emails("HEAD", "--not", "--remotes=origin"):
+        raise RuntimeError("not pushing: a commit that is not on origin yet carries an author or committer "
+                           "e-mail that is not a noreply address, and pushing would publish it "
+                           "('git log --format=\"%h %ae %ce\" HEAD --not --remotes=origin' lists them). "
+                           "Fix the commits, or push by hand if that address is meant to be public")
     git("push", "-u", "origin", branch)
     log(f"git: pushed {branch} to origin")
 
@@ -625,7 +666,7 @@ def main(argv=None):
         sys.stdout.reconfigure(encoding="utf-8")
     args = build_parser().parse_args(argv)
     touched = Touched()
-    committed = False
+    committed = None  # stays None until the commit step has finished
     try:
         allow_new = preflight(args)
         if not args.no_sync:
@@ -647,9 +688,9 @@ def main(argv=None):
         log(f"REFUSED: {refusal}")
         return 2
     except (Exception, KeyboardInterrupt) as error:
-        if committed:
-            log("FAILED after the commit, which stays in the local repository and was not pushed "
-                f"by this run: {error or type(error).__name__}")
+        if committed is not None:
+            log("FAILED after the commit step; local commits stay in the repository and this run "
+                f"pushed nothing: {error or type(error).__name__}")
             return 3
         undo_sync(touched)
         log(f"FAILED: {error or type(error).__name__}")

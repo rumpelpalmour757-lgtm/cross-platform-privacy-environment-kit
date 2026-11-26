@@ -34,7 +34,7 @@ def routing_check(network_data, platform_name="Linux"):
     return checks_by_id(report)["routing_and_ipv6_surface"]
 
 
-def unix_routes(ipv4_types, ipv6, split_ipv6=None, platform_key="linux"):
+def unix_routes(ipv4_types, ipv6, split_ipv6=None, platform_key="linux", tunnel_split_prefixes=None):
     def observed(types):
         return {
             "status": "observed",
@@ -45,6 +45,8 @@ def unix_routes(ipv4_types, ipv6, split_ipv6=None, platform_key="linux"):
     split = {"ipv4": observed({})}
     if split_ipv6 is not None:
         split["ipv6"] = observed(split_ipv6)
+        if tunnel_split_prefixes is not None:
+            split["ipv6"]["tunnel_split_prefixes"] = tunnel_split_prefixes
     return {
         "platform": platform_key,
         "default_routes": {
@@ -281,7 +283,7 @@ class ReportTests(unittest.TestCase):
     def test_render_html_report_is_offline_printable_and_escapes_html(self):
         payload = {
             "schemaVersion": 2,
-            "kitVersion": "0.4.1",
+            "kitVersion": "0.4.2",
             "generatedAtUtc": "2026-11-23T14:30:00Z",
             "platform": "Windows",
             "network": {"status": "unavailable", "reason": "<script>alert(1)</script>"},
@@ -397,6 +399,7 @@ class ReportTests(unittest.TestCase):
             "summary-checks-numbers": {"platform": "Linux", "summary": {"counts": {}, "checks": [1, 2]}},
             "count-not-a-number": {"platform": "Linux", "summary": {"counts": {"pass": "abc"}, "checks": []}},
             "mcp-count-text": boundary_report({"localMcpBridges": {"claudeCliMcpServerCount": "abc"}}),
+            "mcp-count-infinite": boundary_report({"localMcpBridges": {"claudeCliMcpServerCount": float("inf")}}),
             "inventory-files-list": {
                 "platform": "Linux", "claudeLocalData": {"status": "collected", "data": {"files": [1]}},
             },
@@ -455,6 +458,24 @@ class RoutingSurfaceTests(unittest.TestCase):
         self.assertIn("non-tunnel IPv6", check["detail"])
         self.assertIn("3 interface-scoped", check["detail"])
 
+    def test_macos_tunnel_split_routes_over_native_ipv6_default(self):
+        def check(ipv6_split_rows):
+            fixtures = {
+                ("netstat", "-rn", "-f", "inet"): MAC_HEADER + (
+                    "default 192.168.40.1 UGScg en0\n0/1 198.18.0.1 UGSc utun4\n128.0/1 198.18.0.1 UGSc utun4\n"
+                ),
+                ("netstat", "-rn", "-f", "inet6"): MAC_HEADER + "default fe80::1%en0 UGcg en0\n" + ipv6_split_rows,
+            }
+            data = inspect_unix_network.collect("Darwin", reader=lambda _: None, run=lambda *args: fixtures.get(args))
+            return routing_check(data, "Darwin")
+
+        self.assertEqual(check("2000::/3 link#21 Uc utun4\n")["status"], "pass")
+        self.assertEqual(check("::/1 link#21 Uc utun4\n8000::/1 link#21 Uc utun4\n")["status"], "pass")
+        half = check("8000::/1 link#21 Uc utun4\n")
+        self.assertEqual(half["status"], "unknown")
+        self.assertIn("2000::/3", half["detail"])
+        self.assertEqual(check("")["status"], "gap")
+
     def test_macos_only_scoped_ipv6_rows_leave_no_ipv6_surface(self):
         fixtures = {
             ("netstat", "-rn", "-f", "inet"): MAC_HEADER + "default 10.8.0.1 UGScg utun4\n",
@@ -482,9 +503,22 @@ class RoutingSurfaceTests(unittest.TestCase):
             unix_routes(tunnel, {"tunnel_candidate": 1, "wired_or_wifi_candidate": 1}, platform_key="macos"), "Darwin",
         )
         self.assertEqual(both_default["status"], "gap")
-        split_tunnel = routing_check(unix_routes(tunnel, physical, split_ipv6=tunnel, platform_key="macos"), "Darwin")
-        self.assertEqual(split_tunnel["status"], "pass")
-        self.assertIn("split coverage not verified", split_tunnel["detail"])
+        for prefixes in (["2000::/3"], ["::/1", "8000::/1"], ["::/1"]):
+            with self.subTest(prefixes):
+                covered = routing_check(unix_routes(
+                    tunnel, physical, split_ipv6=tunnel, platform_key="macos", tunnel_split_prefixes=prefixes,
+                ), "Darwin")
+                self.assertEqual(covered["status"], "pass")
+                self.assertIn("cover global unicast", covered["detail"])
+        # 8000::/1 alone leaves 2000::/3 on the physical default route; a saved report
+        # without the prefix list cannot show coverage either.
+        for prefixes in (["8000::/1"], None):
+            with self.subTest(prefixes):
+                uncovered = routing_check(unix_routes(
+                    tunnel, physical, split_ipv6=tunnel, platform_key="macos", tunnel_split_prefixes=prefixes,
+                ), "Darwin")
+                self.assertEqual(uncovered["status"], "unknown")
+                self.assertIn("not shown to cover global unicast", uncovered["detail"])
         split_physical = routing_check(unix_routes(tunnel, tunnel, split_ipv6=physical, platform_key="macos"), "Darwin")
         self.assertEqual(split_physical["status"], "gap")
 
@@ -592,23 +626,46 @@ class EvidenceCompletenessTests(unittest.TestCase):
             build_report("Linux", config_dir=Path("config"), project_dir=project)
         audit.assert_called_once_with(system="Linux", config_dir=Path("config"), project_dir=project)
 
-    def _switches(self, read_state, enabled):
+    def _switches(self, read_state, enabled, undetermined=None):
         flags = {f"{key}_enabled": enabled for key in audit_client_boundary.CLI_ANTI_TELEMETRY_KEYS}
         data = {
             "localClientFootprints": {"claudeCliConfigDirPresent": True},
             "cliAntiTelemetryFlags": flags,
             "cliSettingsReadState": read_state,
         }
+        if undetermined is not None:
+            data["cliAntiTelemetryUndetermined"] = undetermined
         return checks_by_id(boundary_report(data))["cli_anti_telemetry_switches"], data
 
     def test_unreadable_cli_settings_make_switches_unknown_instead_of_gap(self):
-        unreadable, data = self._switches("unreadable", False)
+        unreadable, data = self._switches("not_regular_file", False)
         self.assertEqual(unreadable["status"], "unknown")
-        self.assertIn("could not be read", unreadable["detail"])
+        self.assertIn("could not be read (symbolic link or not a regular file)", unreadable["detail"])
         self.assertIn("settings.json 未能读取", render_html_report(boundary_report(data)))
+        for state in ("too_large", "invalid_json", "unreadable"):
+            with self.subTest(state):
+                self.assertEqual(self._switches(state, False)[0]["status"], "unknown")
         self.assertEqual(self._switches("read", False)[0]["status"], "gap")
         self.assertEqual(self._switches("absent", False)[0]["status"], "gap")
-        self.assertEqual(self._switches("unreadable", True)[0]["status"], "pass")
+        # A saved report from before the read state was recorded keeps its old result.
+        self.assertEqual(self._switches(None, False)[0]["status"], "gap")
+        self.assertEqual(self._switches(None, True)[0]["status"], "pass")
+        # Values in an unread settings.json could still change a switch set in the environment.
+        self.assertEqual(self._switches("not_regular_file", True)[0]["status"], "unknown")
+        self.assertEqual(self._switches("read", True)[0]["status"], "pass")
+
+    def test_undetermined_switches_are_unknown_instead_of_pass_or_gap(self):
+        for enabled in (True, False):
+            with self.subTest(enabled=enabled):
+                check, data = self._switches("read", enabled, undetermined=["DISABLE_TELEMETRY"])
+                self.assertEqual(check["status"], "unknown")
+                self.assertIn("could not be determined for: DISABLE_TELEMETRY", check["detail"])
+        self.assertIn("DISABLE_TELEMETRY: 未确定", render_html_report(boundary_report(data)))
+        self.assertEqual(self._switches("read", True, undetermined=[])[0]["status"], "pass")
+        unread, _ = self._switches("not_regular_file", False, undetermined=["DISABLE_TELEMETRY"])
+        self.assertEqual(unread["status"], "unknown")
+        self.assertIn("Values not recognized as on or off: DISABLE_TELEMETRY.", unread["detail"])
+        self.assertNotIn("environment: DISABLE_TELEMETRY,", unread["detail"])
 
     def test_incomplete_local_inventory_is_unknown_instead_of_pass(self):
         def inventory(**data):

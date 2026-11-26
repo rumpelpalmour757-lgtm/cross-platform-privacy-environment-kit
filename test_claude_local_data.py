@@ -4,12 +4,14 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 import claude_local_data as data
+import config_snapshot
 
 
 class ClaudeLocalDataTests(unittest.TestCase):
@@ -82,7 +84,11 @@ class ClaudeLocalDataTests(unittest.TestCase):
             (self.project, "project", ".mcp.json"),
         )
         for base, _, relative in items:
-            self.seed(base / relative, relative.encode())
+            # Checked settings and .mcp.json files must be strict JSON to be backed up.
+            content = relative.encode()
+            if relative.endswith(".json"):
+                content = b'{"fixture": "%s"}' % content
+            self.seed(base / relative, content)
         self.seed(self.config / ".claude.json")
         self.seed(self.config / "projects" / "private" / ".env.local")
         self.seed(self.config / "skills" / "example" / "private.pem")
@@ -120,6 +126,295 @@ class ClaudeLocalDataTests(unittest.TestCase):
         )
         snapshot = data.backup(self.config, self.project, self.destination, require_config=False)
         self.assertEqual(set(data.verify(snapshot)["files"]), {"project/.mcp.json"})
+
+    def test_inline_secret_check_covers_common_forms_and_names_file_and_key(self):
+        fake_key = "sk-ant-TESTONLY-not-a-real-key-0000"
+        fake_token = "fake-opaque-token-0000"
+        cases = {
+            "list argument": ({"mcpServers": {"s": {"args": ["-y", "srv", "--api-key", fake_token]}}},
+                              "mcpServers.s.args[3]"),
+            "flag=value argument": ({"mcpServers": {"s": {"args": [f"--token={fake_token}"]}}},
+                                    "mcpServers.s.args[0]"),
+            "header argument": ({"mcpServers": {"s": {"args": ["--header", f"X-Api-Key: {fake_token}"]}}},
+                                "mcpServers.s.args[1]"),
+            "plain TOKEN env name": ({"mcpServers": {"s": {"env": {"NOTION_TOKEN": fake_token}}}},
+                                     "mcpServers.s.env.NOTION_TOKEN"),
+            "PASSWORD env name": ({"mcpServers": {"s": {"env": {"DB_PASSWORD": "$" + fake_token}}}},
+                                  "mcpServers.s.env.DB_PASSWORD"),
+            "generic header name": ({"mcpServers": {"s": {"headers": {"X-Token": fake_token}}}},
+                                    "mcpServers.s.headers.X-Token"),
+            "cookie header": ({"mcpServers": {"s": {"headers": {"Cookie": f"session={fake_token}"}}}},
+                              "mcpServers.s.headers.Cookie"),
+            "URL user:pass": (
+                {"mcpServers": {"s": {"env": {"DATABASE_URL": f"postgres://user:{fake_token}@db.example.com/x"}}}},
+                "mcpServers.s.env.DATABASE_URL"),
+            "URL ?token=": ({"mcpServers": {"s": {"url": f"https://mcp.example.com/sse?token={fake_token}"}}},
+                            "mcpServers.s.url"),
+            "key embedded in a command": ({"mcpServers": {"s": {"command": f"srv --key {fake_key}"}}},
+                                          "mcpServers.s.command"),
+            "literal default of a placeholder": (
+                {"mcpServers": {"s": {"env": {"API_KEY": "${API_KEY:-" + fake_key + "}"}}}},
+                "mcpServers.s.env.API_KEY"),
+        }
+        for name, (document, key_path) in cases.items():
+            with self.subTest(name=name):
+                self.seed(self.project / ".mcp.json", json.dumps(document).encode())
+                with self.assertRaisesRegex(data.SnapshotError, "Inline API keys or auth tokens") as caught:
+                    data.backup(self.config, self.project, self.destination, require_config=False)
+                message = str(caught.exception)
+                self.assertIn(f"project/.mcp.json: {key_path}", message)
+                for value in (fake_key, fake_token, "TESTONLY", "opaque"):
+                    self.assertNotIn(value, message)
+                self.assertNotIn(self.project.name, message)
+                self.assertEqual(list(self.destination.iterdir()), [])
+
+    def test_inline_secret_check_allows_placeholders_and_known_non_secret_settings(self):
+        settings = {
+            "apiKeyHelper": "/opt/example/get-key.sh",
+            "awsAuthRefresh": "aws sso login --profile example",
+            "env": {
+                "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "3600000",
+                "SECRETS_DIR": "/home/example/secrets",
+                "MAX_MCP_OUTPUT_TOKENS": "25000",
+                "GITHUB_TOKEN": "${GITHUB_TOKEN}",
+                "DISABLE_TOKEN_CHECK": "1",
+                "EXAMPLE_PUBLIC_KEY": "ssh-ed25519 AAAAexamplepublickey",
+            },
+            "permissions": {"deny": ["Read(./.env)", "Read(~/.secrets/**)"]},
+        }
+        mcp = {"mcpServers": {"s": {
+            "url": "https://user:${MCP_PASSWORD}@mcp.example.com/sse?token=${MCP_TOKEN}",
+            "headers": {"Authorization": "Bearer ${MCP_TOKEN}"},
+            "args": ["--api-key", "${MCP_KEY}", "--token=$MCP_TOKEN"],
+            "env": {"API_KEY": "$(example-keychain read api-key)"},
+        }}}
+        self.seed(self.config / "settings.json", json.dumps(settings).encode())
+        self.seed(self.project / ".mcp.json", json.dumps(mcp).encode())
+        snapshot = data.backup(self.config, self.project, self.destination)
+        self.assertEqual(set(data.verify(snapshot)["files"]), {"user-config/settings.json", "project/.mcp.json"})
+
+    def assertBacksUp(self, settings):
+        self.seed(self.config / "settings.json", json.dumps(settings).encode())
+        snapshot = data.backup(self.config, None, self.destination)
+        self.assertEqual(set(data.verify(snapshot)["files"]), {"user-config/settings.json"})
+
+    def assertRefused(self, settings_text, *expected):
+        self.seed(self.config / "settings.json", settings_text.encode() if isinstance(settings_text, str) else settings_text)
+        before = set(self.destination.iterdir())
+        with self.assertRaisesRegex(data.SnapshotError, "Inline API keys or auth tokens") as caught:
+            data.backup(self.config, None, self.destination)
+        for text in expected:
+            self.assertIn(text, str(caught.exception))
+        self.assertEqual(set(self.destination.iterdir()), before)
+        return str(caught.exception)
+
+    def test_inline_secret_check_allows_rules_paths_and_shell_references(self):
+        cases = {
+            # Permission rules that name commands which read credentials.
+            "permission rules": {"permissions": {
+                "allow": ["Bash(npm run test:*)", "Bash(export TOKEN=*)"],
+                "deny": ["Bash(gh auth token:*)", "Bash(security find-generic-password:*)",
+                         "Bash(aws secretsmanager get-secret-value:*)", "Bash(kubectl create token:*)"],
+            }},
+            "certificate and key file paths": {"mcpServers": {"s": {"args": [
+                "--cert", "./cert.pem", "--key", "./key.pem", "--key", "/etc/example/client.key",
+                "--secret", "C:\\example\\secret.p12", "--token", "~/example/token.pem"]}}},
+            "lower-case shell variable in a hook": {"hooks": {"PreToolUse": [{"hooks": [{
+                "type": "command", "command": 'curl -H "Authorization: Bearer $tok" https://example.com/hook'}]}]}},
+            "flags that name a variable or a secret": {"mcpServers": {"s": {"args": [
+                "--api-key-env", "EXAMPLE_API_KEY", "--secret-name", "prod/db"]}}},
+            "key IDs": {"env": {"GPG_KEY_ID": "0123ABCD4567EF89"}},
+            "client key and credentials file settings": {"env": {
+                "CLAUDE_CODE_CLIENT_KEY": "/etc/example/client.key",
+                "GOOGLE_APPLICATION_CREDENTIALS": "/home/example/gcp.json"}},
+            "Bearer in prose without digits": {"mcpServers": {"s": {"description": "Uses Bearer authentication-only"}}},
+        }
+        for name, settings in cases.items():
+            with self.subTest(name=name):
+                self.assertBacksUp(settings)
+
+    def test_inline_secret_check_finds_token_keys_anywhere_and_more_forms(self):
+        fake = "plain-literal-0000"
+        cases = {
+            "token key below another key": ({"mcpServers": {"z": {"auth": {"token": fake}}}}, "mcpServers.z.auth.token"),
+            "apiToken key": ({"mcpServers": {"z": {"apiToken": fake}}}, "mcpServers.z.apiToken"),
+            "X-Auth header": ({"mcpServers": {"z": {"headers": {"X-Auth": fake}}}}, "mcpServers.z.headers.X-Auth"),
+            "PWD env name": ({"env": {"MYSQL_PWD": fake}}, "env.MYSQL_PWD"),
+            "access token in a URL fragment": ({"mcpServers": {"z": {"url": f"https://example.com/cb#access_token={fake}"}}},
+                                               "mcpServers.z.url"),
+            "literal value that only looks like a variable": ({"env": {"DB_PASSWORD": "$uperSecret123"}}, "env.DB_PASSWORD"),
+        }
+        for name, (settings, key_path) in cases.items():
+            with self.subTest(name=name):
+                message = self.assertRefused(json.dumps(settings), f"user-config/settings.json: {key_path}")
+                self.assertNotIn(fake, message)
+        self.assertBacksUp({"env": {"MAX_MCP_OUTPUT_TOKENS": "25000"}})
+
+    def test_inline_secret_check_reads_both_values_of_a_duplicate_key(self):
+        self.assertRefused('{"env": {"API_KEY": "fake-literal-0000", "API_KEY": "${API_KEY}"}}',
+                           "user-config/settings.json: env.API_KEY")
+
+    def test_secret_shaped_key_name_is_reported_redacted(self):
+        fake_key = "sk-ant-TESTONLY-not-a-real-key-0000"
+        message = self.assertRefused(json.dumps({"mcpServers": {fake_key: {"command": "srv"}}}),
+                                     "user-config/settings.json: mcpServers.<redacted>")
+        self.assertNotIn("TESTONLY", message)
+
+    def test_secret_shapes_are_found_in_values_with_neutral_names(self):
+        github_classic = "gh" + "p_" + "TESTONLY" + "0" * 28
+        github_fine_grained = "github" + "_pat_" + "TESTONLY_" + "0" * 30
+        for name, value in (("PEM private key", "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n"),
+                            ("GitHub classic token", github_classic),
+                            ("GitHub fine-grained token", github_fine_grained)):
+            with self.subTest(name=name):
+                message = self.assertRefused(json.dumps({"env": {"EXAMPLE_NOTE": value}}),
+                                             "user-config/settings.json: env.EXAMPLE_NOTE")
+                self.assertNotIn("TESTONLY", message)
+
+    def test_checked_files_that_are_not_utf8_are_refused(self):
+        for name, content in (("GBK", '{"note": "设置"}'.encode("gbk")),
+                              ("UTF-16", '{"note": "x"}'.encode("utf-16"))):
+            with self.subTest(encoding=name):
+                self.seed(self.config / "settings.json", content)
+                with self.assertRaisesRegex(data.SnapshotError, r"user-config/settings\.json \(not UTF-8"):
+                    data.backup(self.config, None, self.destination)
+                self.assertEqual(list(self.destination.iterdir()), [])
+
+    def test_error_lists_at_most_ten_findings(self):
+        settings = {"env": {f"EXAMPLE_TOKEN_{number:02d}": "fake-opaque-0000" for number in range(12)}}
+        message = self.assertRefused(json.dumps(settings), "; and 2 more")
+        self.assertEqual(message.count("env.EXAMPLE_TOKEN_"), 10)
+
+    def test_checked_files_that_are_not_strict_json_are_not_backed_up_silently(self):
+        fake_key = "sk-ant-TESTONLY-not-a-real-key-0000"
+        self.seed(self.config / "settings.json",
+                  ('{\n  // comment\n  "env": {"ANTHROPIC_API_KEY": "%s",},\n}\n' % fake_key).encode())
+        with redirect_stderr(StringIO()) as errors:
+            self.assertEqual(data.main(["backup", "--config-dir", str(self.config),
+                                        "--destination", str(self.destination)]), 1)
+        self.assertIn("user-config/settings.json (not strict JSON", errors.getvalue())
+        self.assertNotIn(fake_key, errors.getvalue())
+        self.assertEqual(list(self.destination.iterdir()), [])
+        # An empty file has nothing to leak.
+        self.seed(self.config / "settings.json", b"")
+        snapshot = data.backup(self.config, None, self.destination)
+        self.assertEqual(set(data.verify(snapshot)["files"]), {"user-config/settings.json"})
+
+    def test_allow_inline_secrets_still_lists_what_it_let_through(self):
+        fake_token = "fake-opaque-token-0000"
+        self.seed(self.config / "settings.json", json.dumps({"env": {"EXAMPLE_TOKEN": fake_token}}).encode())
+        self.seed(self.config / "settings.local.json", b'{"env": {},}')
+        with redirect_stdout(StringIO()), redirect_stderr(StringIO()) as errors:
+            self.assertEqual(data.main(["backup", "--config-dir", str(self.config),
+                                        "--destination", str(self.destination), "--allow-inline-secrets"]), 0)
+        warning = errors.getvalue()
+        self.assertIn("--allow-inline-secrets kept", warning)
+        self.assertIn("user-config/settings.json: env.EXAMPLE_TOKEN", warning)
+        self.assertIn("user-config/settings.local.json (not strict JSON", warning)
+        self.assertNotIn(fake_token, warning)
+        snapshot, = self.destination.iterdir()
+        self.assertEqual(len(data.verify(snapshot)["files"]), 2)
+
+    def test_backup_reports_and_records_entries_left_out_by_name(self):
+        self.seed(self.config / "skills" / "example" / "SKILL.md")
+        self.seed(self.config / "skills" / "example" / "auth.json")
+        self.seed(self.config / "skills" / "example" / ".env.example")
+        with redirect_stdout(StringIO()) as output:
+            self.assertEqual(data.main(["backup", "--config-dir", str(self.config),
+                                        "--destination", str(self.destination)]), 0)
+        self.assertIn("Left out by name: 2", output.getvalue())
+        snapshot, = self.destination.iterdir()
+        manifest = json.loads((snapshot / data.MANIFEST_NAME).read_text(encoding="utf-8"))
+        self.assertEqual(manifest["excluded_secret_entries"], 2)
+        self.assertEqual(set(data.verify(snapshot)["files"]), {"user-config/skills/example/SKILL.md"})
+
+    def test_snapshot_written_before_the_left_out_count_still_recovers(self):
+        self.seed(self.config / "history.jsonl")
+        snapshot = data.backup(self.config, None, self.destination)
+        manifest = snapshot / data.MANIFEST_NAME
+        record = json.loads(manifest.read_text(encoding="utf-8"))
+        record.pop("excluded_secret_entries", None)
+        manifest.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
+        self.assertEqual(set(data.verify(snapshot)["files"]), {"user-config/history.jsonl"})
+        recovered = data.recover(snapshot, self.recovery_path)
+        self.assertEqual((recovered / "user-config" / "history.jsonl").read_bytes(), b"private-test-content")
+
+    def test_recovery_may_use_the_folder_that_holds_the_snapshot(self):
+        self.seed(self.config / "history.jsonl")
+        snapshot = data.backup(self.config, None, self.destination)
+        recovered = data.recover(snapshot, self.destination)
+        self.assertEqual(recovered.parent, self.destination)
+        self.assertEqual(len(data.verify(snapshot)["files"]), 1)
+        for inside in (snapshot, snapshot / data.PAYLOAD_NAME):
+            with self.subTest(destination=inside):
+                with self.assertRaisesRegex(data.SnapshotError, "outside the snapshot"):
+                    data.recover(snapshot, inside)
+
+    def test_unexpected_snapshot_entries_are_named(self):
+        self.seed(self.config / "history.jsonl")
+        snapshot = data.backup(self.config, None, self.destination)
+        (snapshot / ".DS_Store").write_bytes(b"fixture")
+        with self.assertRaisesRegex(data.SnapshotError, r"unexpected files: '\.DS_Store'"):
+            data.verify(snapshot)
+
+    def test_link_rejection_says_how_many_and_where(self):
+        self.seed(self.config / "skills" / "real" / "SKILL.md")
+        try:
+            (self.config / "skills" / "linked").symlink_to(self.root, target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        self.assertEqual(data.audit(self.config)["unsafe_or_unavailable_by_area"], {"skills": 1})
+        with self.assertRaisesRegex(data.SnapshotError, r"found 1 entry that is a link.*\(in: skills\)"):
+            data.backup(self.config, None, self.destination)
+
+    def test_entry_point_reports_runtime_errors_in_one_line(self):
+        self.seed(self.config / "history.jsonl")
+        snapshot = data.backup(self.config, None, self.destination)
+        (snapshot / data.MANIFEST_NAME).write_text("[" * 200000 + "]" * 200000, encoding="utf-8")
+        with redirect_stderr(StringIO()) as errors:
+            self.assertEqual(data.main(["verify", str(snapshot)]), 1)
+        self.assertIn("Invalid backup manifest", errors.getvalue())
+        with redirect_stderr(StringIO()) as errors, redirect_stdout(StringIO()):
+            self.assertEqual(data.main(["audit", "--config-dir", "~no-such-user-fixture/x"]), 1)
+        self.assertEqual(errors.getvalue(), "Claude work operation stopped (RuntimeError).\n")
+        real_stat = data.checked_stat
+
+        def too_deep(path):
+            if path.name == "deep":
+                raise RecursionError("fixture")
+            return real_stat(path)
+
+        self.seed(self.config / "projects" / "deep" / "session.jsonl")
+        with patch.object(data, "checked_stat", side_effect=too_deep):
+            self.assertEqual(data.audit(self.config)["unsafe_or_unavailable_by_area"],
+                             {"sessions_and_project_data": 1})
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Linux mount table")
+    def test_audit_runs_on_network_storage_and_says_so_while_backup_refuses(self):
+        self.seed(self.config / "history.jsonl")
+        mounts = f"/dev/sda1 / ext4 rw 0 0\nserver:/export {self.root} nfs4 rw 0 0\n"
+        with patch.object(config_snapshot, "_read_proc_mounts", return_value=mounts):
+            with redirect_stdout(StringIO()) as output:
+                self.assertEqual(data.main(["audit", "--config-dir", str(self.config)]), 0)
+            result = json.loads(output.getvalue())
+            self.assertTrue(result["network_or_synced_storage"])
+            self.assertEqual(result["files"], 1)
+            with redirect_stderr(StringIO()) as errors:
+                self.assertEqual(data.main(["backup", "--config-dir", str(self.config),
+                                            "--destination", str(self.destination)]), 1)
+            self.assertIn("network or shared filesystem", errors.getvalue())
+        self.assertEqual(list(self.destination.iterdir()), [])
+
+    def test_symlinked_config_directory_is_counted_as_not_inspected(self):
+        self.seed(self.root / "real-config" / "history.jsonl")
+        try:
+            self.config.symlink_to(self.root / "real-config", target_is_directory=True)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        result = data.audit(self.config)
+        self.assertFalse(result["user_config_present"])
+        self.assertEqual(result["unsafe_or_unavailable_by_area"], {"user_config_root": 1})
+        self.assertEqual(result["files"], 0)
 
     def test_hardlinked_secret_file_is_rejected(self):
         secret = self.config / ".credentials.json"
@@ -212,7 +507,7 @@ class ClaudeLocalDataTests(unittest.TestCase):
         modes = {"hooks/run.sh": 0o755, "skills/example/helper.sh": 0o700, "settings.json": 0o600}
         for name, mode in modes.items():
             source = self.config / name
-            self.seed(source)
+            self.seed(source, b"{}" if name.endswith(".json") else b"private-test-content")
             source.chmod(mode)
         (self.config / "hooks/run.sh").chmod(0o4755)
         with redirect_stdout(StringIO()):

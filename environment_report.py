@@ -18,7 +18,7 @@ from config_snapshot import SnapshotError, checked_stat
 
 
 ROOT = Path(__file__).resolve().parent
-KIT_VERSION = "0.4.1"
+KIT_VERSION = "0.4.2"
 
 STATUS_META = {
     "pass": ("已通过", "pass"),
@@ -134,6 +134,23 @@ def _as_count(value):
     return value
 
 
+READ_STATE_TEXT = {
+    "not_regular_file": "symbolic link or not a regular file",
+    "too_large": "larger than the read limit",
+    "invalid_json": "not valid JSON",
+    "unreadable": "could not be opened",
+}
+
+
+def _is_unread_state(state):
+    """True for a boundary-audit read state that means "exists but was not read"."""
+    return state not in (None, "absent", "read")
+
+
+def _read_state_text(state):
+    return READ_STATE_TEXT.get(state, "could not be read")
+
+
 def _has_observed_network_subsystem(network_data):
     if not isinstance(network_data, dict):
         return False
@@ -199,9 +216,16 @@ def _unix_ipv6_surface(platform_key, ipv6, split_v6):
     if platform_key == "macos":
         # One routing table once interface-scoped rows are excluded: more-specific split routes win.
         if split_tunnel and not split_other:
-            return "clear", (
-                "more-specific IPv6 split-default routes use tunnel interface candidates over a "
-                "non-tunnel IPv6 default route (split coverage not verified)"
+            prefixes = split_v6.get("tunnel_split_prefixes")
+            # ::/1 contains 2000::/3, so either one carries all global unicast IPv6 destinations.
+            if isinstance(prefixes, list) and ("2000::/3" in prefixes or "::/1" in prefixes):
+                return "clear", (
+                    "more-specific IPv6 split-default routes over tunnel interface candidates cover global "
+                    "unicast (2000::/3) ahead of a non-tunnel IPv6 default route"
+                )
+            return "unknown", (
+                "IPv6 split-default routes use tunnel interface candidates over a non-tunnel IPv6 default "
+                "route, but they were not shown to cover global unicast (2000::/3); IPv6 exposure was not verified."
             )
         return "gap", (
             "Non-tunnel IPv6 default route candidate observed alongside a tunnel candidate; "
@@ -651,7 +675,36 @@ def build_tri_state_summary(report):
                 for key, enabled in flags.items()
                 if not enabled
             ]
-            if flags and not disabled_flags:
+            settings_state = boundary_data.get("cliSettingsReadState")
+            undetermined = boundary_data.get("cliAntiTelemetryUndetermined")
+            undetermined = [str(name) for name in undetermined] if isinstance(undetermined, list) else []
+            if _is_unread_state(settings_state):
+                not_enabled = [name for name in disabled_flags if name not in undetermined]
+                undetermined_note = (
+                    f" Values not recognized as on or off: {', '.join(undetermined)}." if undetermined else ""
+                )
+                checks.append(_make_check(
+                    "cli_anti_telemetry_switches",
+                    "client_boundary",
+                    "Claude CLI 5 anti-telemetry switches",
+                    "unknown",
+                    "static_config",
+                    f"Claude CLI settings.json exists but could not be read ({_read_state_text(settings_state)}), "
+                    "so switch values set there were not evaluated. Not enabled through the process "
+                    f"environment: {', '.join(not_enabled) or 'none'}.{undetermined_note}",
+                ))
+            elif undetermined:
+                checks.append(_make_check(
+                    "cli_anti_telemetry_switches",
+                    "client_boundary",
+                    "Claude CLI 5 anti-telemetry switches",
+                    "unknown",
+                    "static_config",
+                    f"Switch state could not be determined for: {', '.join(undetermined)} (the process environment "
+                    "and settings.json disagree, and which one the client applies was not verified, or a value "
+                    "is not one of 1/true/yes or 0/false/no/off).",
+                ))
+            elif flags and not disabled_flags:
                 checks.append(_make_check(
                     "cli_anti_telemetry_switches",
                     "client_boundary",
@@ -659,18 +712,6 @@ def build_tri_state_summary(report):
                     "pass",
                     "static_config",
                     "All 5 CLI anti-telemetry and non-essential traffic switches are enabled.",
-                ))
-            elif boundary_data.get("cliSettingsReadState") == "unreadable":
-                not_enabled = ", ".join(disabled_flags) if disabled_flags else "unverified"
-                checks.append(_make_check(
-                    "cli_anti_telemetry_switches",
-                    "client_boundary",
-                    "Claude CLI 5 anti-telemetry switches",
-                    "unknown",
-                    "static_config",
-                    "Claude CLI settings.json exists but could not be read (symbolic link, oversized, or not "
-                    "valid JSON), so switches set there were not evaluated. Not enabled through the process "
-                    f"environment: {not_enabled}.",
                 ))
             else:
                 missing_list = ", ".join(disabled_flags) if disabled_flags else "unverified"
@@ -701,8 +742,8 @@ def build_tri_state_summary(report):
                 + _as_count(mcp.get("claudeCliMcpUnreadableConfigCount"))
             )
             unreadable_note = (
-                f" {unreadable} config file(s) could not be read (symbolic link, oversized, or not valid JSON), "
-                "so the count may be incomplete."
+                f" {unreadable} config file(s) could not be read (symbolic link or other non-regular file, "
+                "oversized, not valid JSON, or not readable), so the count may be incomplete."
                 if unreadable else ""
             )
             if desktop_mcp + cli_mcp > 0:
@@ -902,16 +943,21 @@ def render_html_report(report):
             "</tr>"
         )
 
+    undetermined_flags = boundary.get("cliAntiTelemetryUndetermined")
+    undetermined_flags = set(undetermined_flags) if isinstance(undetermined_flags, list) else set()
     flag_chips = []
     for key, enabled in anti_flags.items():
         short_key = key[:-8] if key.endswith("_enabled") else key
-        cls = "pill-pass" if enabled else "pill-gap"
-        state_txt = "ON" if enabled else "OFF"
+        if short_key in undetermined_flags:
+            cls, state_txt = "pill-unknown", "未确定"
+        else:
+            cls = "pill-pass" if enabled else "pill-gap"
+            state_txt = "ON" if enabled else "OFF"
         flag_chips.append(
             f"<span class=\"pill {cls}\">{_escape(short_key)}: {state_txt}</span>"
         )
     flags_html = " ".join(flag_chips) if flag_chips else "<span class=\"muted\">未采集</span>"
-    if boundary.get("cliSettingsReadState") == "unreadable":
+    if _is_unread_state(boundary.get("cliSettingsReadState")):
         flags_html += "<div class=\"muted\">settings.json 未能读取，以上仅反映进程环境变量。</div>"
 
     notes_html = "".join(f"<li>{_escape(note)}</li>" for note in notes) or "<li>无额外提示。</li>"
@@ -1260,7 +1306,7 @@ def main(argv=None):
             rendered = render_html_report(report)
             rendered.encode("utf-8")
             outputs.append((args.html_out, rendered))
-    except (AttributeError, KeyError, TypeError, ValueError, RecursionError) as exc:
+    except (AttributeError, KeyError, OverflowError, TypeError, ValueError, RecursionError) as exc:
         if args.from_json is None:
             raise
         parser.error(f"--from-json does not have the shape of an environment report ({type(exc).__name__})")

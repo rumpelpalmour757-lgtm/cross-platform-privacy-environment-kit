@@ -5,3 +5,30 @@ __pycache__/
 *.part
 routing-global.json
 *.log
+
+# 本机生成的体检单、证据目录、防火墙备份和日志：只留在本机
+/*.html
+env-health*.html
+evidence/
+*.wfw
+*.jsonl
+
+# 本机环境、编辑器和客户端配置
+.env
+.venv/
+venv/
+.vscode/
+.idea/
+.claude/
+.DS_Store
+Thumbs.db
+desktop.ini
+*.bak
+*.db
+guiConfigs/
+guiNConfig.json
+
+# 只在本机源目录保存的私有资料
+research-reports/
+sources/
+THIRD-PARTY-NOTICE.md

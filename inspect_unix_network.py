@@ -152,6 +152,7 @@ def _normalize_mac_split_dest(token):
 
 def _mac_route_rows(text, split_only):
     routes = []
+    destinations = []
     scoped = 0
     netif_index = None
     for row in text.splitlines():
@@ -163,8 +164,9 @@ def _mac_route_rows(text, split_only):
             continue
         if not fields:
             continue
+        destination = _normalize_mac_split_dest(fields[0]) if split_only else fields[0]
         matched = (
-            _normalize_mac_split_dest(fields[0]) is not None
+            destination is not None
             if split_only
             else fields[0] in {"default", "0.0.0.0/0", "::/0"}
         )
@@ -182,9 +184,10 @@ def _mac_route_rows(text, split_only):
                 "U" in flags and "R" not in flags and "B" not in flags and "I" not in flags,
                 (fields[netif_index],),
             ))
+            destinations.append(destination)
     if netif_index is None:
         raise ValueError("Missing route-table header")
-    return routes, scoped
+    return routes, scoped, destinations
 
 
 def mac_defaults(text, *, split_only=False):
@@ -268,8 +271,8 @@ def mac_routes(family, run):
     text = run("netstat", "-rn", "-f", "inet" if family == "ipv4" else "inet6")
     if text is not None:
         try:
-            default_rows, default_scoped = _mac_route_rows(text, False)
-            split_rows, split_scoped = _mac_route_rows(text, True)
+            default_rows, default_scoped, _ = _mac_route_rows(text, False)
+            split_rows, split_scoped, split_destinations = _mac_route_rows(text, True)
         except ValueError:
             pass
         else:
@@ -277,6 +280,13 @@ def mac_routes(family, run):
             default["interface_scoped_route_count"] = default_scoped
             split = route_summary(split_rows, "macos_netstat", {}, "split_route_count")
             split["interface_scoped_route_count"] = split_scoped
+            # Fixed split prefixes (never addresses) carried by tunnel candidates. macOS has one
+            # unscoped routing table, so these more-specific routes win over a default route.
+            split["tunnel_split_prefixes"] = sorted({
+                destination
+                for destination, (eligible, names) in zip(split_destinations, split_rows, strict=True)
+                if eligible and interface_kind(names[0], {}) == "tunnel_candidate"
+            })
             return default, split
     return route_summary(None, None, {}), route_summary(None, None, {}, "split_route_count")
 

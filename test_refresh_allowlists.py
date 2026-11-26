@@ -11,7 +11,9 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 from refresh_allowlists import (
+    USER_AGENT,
     _StrictHttpsRedirectHandler,
+    _https_urlopen,
     cidr_entries,
     compile_rules,
     domain_entries,
@@ -41,6 +43,14 @@ class RefreshTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 cidr_entries(f"payload:\n  - '{value}'\n".encode())
 
+    def test_broad_prefix_that_contains_private_space_fails(self):
+        # Each prefix is "global" as a whole but contains a private, CGNAT,
+        # link-local, synthetic, or documentation range.
+        for value in ("192.0.0.0/8", "172.0.0.0/8", "100.0.0.0/8", "169.0.0.0/8",
+                      "198.0.0.0/8", "203.0.0.0/8", "2001::/16"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                cidr_entries(f"payload:\n  - '{value}'\n".encode())
+
     def test_rejects_wrong_structure_and_domain(self):
         for raw in (b"data:\n  - 'example.com'", b"payload:\n", b"payload:\n  - example.com",
                     b"payload:\n  - '*.example.com'", b"payload:\n  - 'https://example.com'",
@@ -65,6 +75,29 @@ class RefreshTests(unittest.TestCase):
         ):
             with self.subTest(target=bad_target), self.assertRaises(HTTPError):
                 handler.redirect_request(req, BytesIO(), 302, "Found", {}, bad_target)
+
+    def test_upstream_request_is_pinned_to_host_with_timeout_and_unversioned_agent(self):
+        with patch("refresh_allowlists.build_opener") as opener:
+            _https_urlopen("https://raw.githubusercontent.com/Loyalsoldier/clash-rules/release/direct.txt")
+        request = opener.return_value.open.call_args.args[0]
+        self.assertEqual(opener.return_value.open.call_args.kwargs, {"timeout": 20})
+        self.assertEqual(request.get_header("User-agent"), USER_AGENT)
+        self.assertNotRegex(USER_AGENT, r"\d+\.\d+")
+        for url in ("http://raw.githubusercontent.com/x", "https://example.com/direct.txt"):
+            with self.subTest(url=url), patch("refresh_allowlists.build_opener") as blocked:
+                with self.assertRaises(ValueError):
+                    _https_urlopen(url)
+                blocked.assert_not_called()
+
+    def test_commit_pin_reaches_both_downloads(self):
+        commit = "a" * 40
+        with TemporaryDirectory() as folder, redirect_stdout(StringIO()):
+            with patch("refresh_allowlists.read_payload", side_effect=[DOMAINS, NETWORKS]) as read:
+                self.assertEqual(main(["--output-directory", folder, "--commit", commit]), 0)
+        self.assertEqual(
+            [(call.args, call.kwargs) for call in read.call_args_list],
+            [(("direct.txt", None), {"commit": commit}), (("cncidr.txt", None), {"commit": commit})],
+        )
 
     def test_enforces_expected_sha256_digests(self):
         with TemporaryDirectory() as folder, redirect_stdout(StringIO()), redirect_stderr(StringIO()):

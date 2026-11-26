@@ -15,7 +15,7 @@
 
 | 项目 / 数据源 | 用途与边界 | 公开链接 |
 | :--- | :--- | :--- |
-| `Loyalsoldier/v2ray-rules-dat` | `refresh_allowlists.py` 可选拉取国内直连名单与 CIDR 预览（默认仅生成预览、不自动套用，建议固定 `--commit` 与 SHA-256 校验） | https://github.com/Loyalsoldier/v2ray-rules-dat |
+| `Loyalsoldier/clash-rules` | `refresh_allowlists.py` 可选从它的 `release` 分支（或 `--commit` 指定的提交）拉取国内直连名单 `direct.txt` 与 CIDR `cncidr.txt` 预览（默认仅生成预览、不自动套用，建议固定 `--commit` 与 SHA-256 校验） | https://github.com/Loyalsoldier/clash-rules |
 | `v2rayN` / `v2rayNG` / `Xray-core` | Windows 与 Android 路由模板及配置快照备份的目标客户端；本仓库不内置客户端二进制或 Xray 核心 | https://github.com/2dust/v2rayN · https://github.com/2dust/v2rayNG |
 | `Shadowrocket` | iOS 配置模板的目标客户端，仅提供纯文本配置模板与静态校验脚本 | — |
 

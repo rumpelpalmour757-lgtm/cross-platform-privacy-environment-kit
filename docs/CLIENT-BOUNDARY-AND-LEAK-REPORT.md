@@ -1,7 +1,7 @@
 # 跨端网络隐私边界与客户端外联实测综合报告
 
-> 适用工具包 `v0.4.1`（MIT 公开版）。四层实测整理于 2026-11-23，Cage 个案于 2026-11-24 核对。
-> **性质声明**：本报告为干净原创的隐私工程与网络边界技术报告，由作者的本机独立四层实测数据与公开技术背景的原创归纳构成。**不包含任何第三方文章原文拷贝或未授权转载文本**，所有公开背景来源仅以可复核的外链形式列于文末。
+> 适用工具包 `v0.4.2`（MIT 公开版）。四层实测整理于 2026-11-23，Cage 个案于 2026-11-24 核对。
+> **性质声明**：本报告为干净原创的隐私工程与网络边界技术报告，由作者的本机独立四层实测数据与公开技术背景的原创归纳构成。**不包含任何第三方文章原文拷贝或未授权转载文本**，主要公开背景来源以可复核的外链形式列于文末，正文另有少量就地引用的官方文档链接。
 
 ---
 
@@ -53,6 +53,8 @@
 | **防火墙断网兜底冲突** | 无额外系统级放行规则 | 无额外系统级放行规则 | **高危**：MSIX 安装清单自动写入 `Claude.exe` 与 `cowork-svc.exe` 全配置 TCP 出站允许规则 | 依赖系统「始终开启 VPN」+「阻止非 VPN 连接」+ 电池后台白名单 | 依赖规则集接管 IPv6 与远程 DoH，避免系统默认回落 |
 | **推荐角色定位** | **高敏感 Web 会话的首选隔离入口** | **补齐 5 项防外联开关后适合作为独立开发终端** | 如非必需建议保持不装；若安装须立刻清理 MSIX 防火墙放行规则 | 网络层可补强，但不可将原生 App 等同于桌面隔离浏览器 | 补齐 IPv6 接管与加密 DNS 后适合作为移动辅助端 |
 
+> 来源说明：表中 Android 与 iOS 两列来自公开社区研究，作者没有在手机上亲测；第三节的本机实测只覆盖 CLI、网页前端脚本和 Windows 桌面端安装包。
+
 ---
 
 ## 三、独立四层实测审计详录（2026-11-22 ~ 2026-11-23）
@@ -85,7 +87,7 @@
 
 1. **高权限清单与最关键的防火墙冲突**：
    - 清单声明 `runFullTrust`、`localSystemServices` 与 `unvirtualizedResources`；
-   - **最高危发现**：`AppxManifest.xml` 内置两条面向全网络配置（Domain / Private / Public）的 TCP 出站「允许」规则，分别授予 `app\Claude.exe` 与 `app\resources\cowork-svc.exe`。在 Windows 防火墙规则求值顺序中，显式「允许」高于「默认阻止出站」，但低于显式「阻止」——这意味着仅依赖 `DefaultOutboundAction=Block` 的环境一旦断开 TUN，这两个进程会直接穿过防漏网出网；若采用本工具包的显式物理网卡 Block 规则（`Manage-WindowsKillSwitch.ps1`）或安装后手动禁用这两条 MSIX Allow 规则，方可堵死穿透。
+   - **最高危发现**：`AppxManifest.xml` 内置两条面向全网络配置（Domain / Private / Public）的 TCP 出站「允许」规则，分别授予 `app\Claude.exe` 与 `app\resources\cowork-svc.exe`。在 Windows 防火墙规则求值顺序中，显式「允许」高于「默认阻止出站」，但低于显式「阻止」——这意味着仅依赖 `DefaultOutboundAction=Block` 的环境一旦断开 TUN，这两个进程会直接穿过防漏网出网；若采用本工具包的显式物理网卡 Block 规则（`Manage-WindowsKillSwitch.ps1`）或安装后手动禁用这两条 MSIX Allow 规则，方可堵死穿透。（这一条是对安装清单的静态分析加防火墙求值规则的推断：全程没有安装，规则是否真的写入、断开 TUN 后是否真的穿透，都没有在已安装的环境里观测过。）
 2. **冷启动即外联，且个人账号无法屏蔽核心遥测**：
    - 官方主进程外联端点总表证实：自动更新（`releases.claude.com` / `downloads.claude.ai`）与 Sentry（`o1158394.ingest.us.sentry.io`）均在应用启动瞬间、用户登录之前触发；后台还会每 5–15 分钟定期拉取 `downloads.claude.ai/model-catalog/v1/catalog.json`。
    - 源码中关闭 Sentry、Datadog RUM、使用遥测及非必要外围服务的企业策略键（`disableEssentialTelemetry`、`disableNonessentialTelemetry`、`disableNonessentialServices`）均限定于企业/第三方部署范围（`3p`），个人常规部署（`1p`）无法关闭。
@@ -117,9 +119,9 @@
 
 ### 3.3 第 3 层：网络层分流、DNS 与防火墙全链路对账
 
-对 **39 个目标**（37 个全端核心与外围域名 + 官方 IPv4 网段 `160.79.104.0/21` + 官方 IPv6 前缀 `2607:6bc0::/48`）逐条校验路由匹配与 DNS 解析路径，得出以下工程基线：
+对 **39 个目标**（37 个全端核心与外围域名 + 官方 IPv4 网段 `160.79.104.0/21` + 官方 IPv6 前缀 `2607:6bc0::/48`）逐条校验路由匹配与 DNS 解析路径，得出以下工程基线。这 39 个目标的逐条清单没有随仓库发布，其中 37 个域名与现行的 30 项清单不是同一份；仓库里能复核的是现行 30 项、`160.79.104.0/21` 和两个 IPv6 前缀：
 
-- **30 个核心与外围生态域名**（完整列表见 [claude-doh-domains.txt](../claude-doh-domains.txt)）必须显式排在 `geosite:cn` 与 `geoip:cn` 之前，并同步绑定远端加密 DNS（DoH），避免任何一条子请求回落境内线路或本地 53 端口；
+- **30 项核心与外围生态条目**（29 条域名后缀加 1 条关键词，完整列表见 [claude-doh-domains.txt](../claude-doh-domains.txt)）必须显式排在 `geosite:cn` 与 `geoip:cn` 之前，并同步绑定远端加密 DNS（DoH），避免任何一条子请求回落境内线路或本地 53 端口；
 - **官方 IPv4 网段 `160.79.104.0/21`**（AS399358）置顶走代理；
 - **UDP/443（QUIC）** 与 **Anthropic IPv6 前缀（`2607:6bc0::/48`、`2607:6bc0:11::/48`）** 置顶阻断：在单 IPv4 出口节点上，屏蔽这两段 IPv6 可迫使客户端平稳回落 IPv4，大幅减少高频 502 错误；
 - **端口 53 旁路与闲置网卡检查**：实时体检确认非回环端口 53 连接为 `0`、公网 IPv6 流量为 `0`；同时暴露出一个常见盲区——**当前断开状态的有线以太网适配器往往仍保留 IPv6 绑定**，日后插网线前应一并检查关闭。
@@ -177,17 +179,17 @@
 
 ---
 
-## 五、从实测发现到工具包 `v0.4.1` 的防护映射（含副作用说明）
+## 五、从实测发现到工具包 `v0.4.2` 的防护映射（含副作用说明）
 
 | 实测识别的风险点 | 工具包对应脚本 / 配置 | 必须提前了解的副作用与取舍 |
 | :--- | :--- | :--- |
 | 外围域名出口分裂 & IPv6 502 | `build_routing.py`、`routing-claude-ecosystem.json`、`routing-claude-global.json`、`claude-doh-domains.txt` | **外溢取舍**：分流模式下把 `cdnjs`、`jsdelivr`、`sentry.io`、`stripe.com`、`segment.com`、`recaptcha.net` 等通用域名置顶走代理，会让访问这些资源的国内站点略有绕路变慢。 |
-| 断 TUN 静默回落直连 & MSIX 允许规则穿透 | `Manage-WindowsKillSwitch.ps1`、`build_kill_switch.py`（显式物理网卡 Block 优先级高于 Allow） | **DHCP 例外必需**：网卡启用 DHCP 时必须指定 `-DhcpServer`，否则租约续期被拦会导致断网（`v0.3.8` 起 `Install` 会自动拦截未配 `-DhcpServer` 的 DHCP 网卡）；新增 USB 网卡或热点需重新安装规则。 |
+| 断 TUN 静默回落直连 & MSIX 允许规则穿透 | `Manage-WindowsKillSwitch.ps1`、`build_kill_switch.py`（显式物理网卡 Block 优先级高于 Allow） | **DHCP 例外必需**：网卡启用 DHCP 时必须指定 `-DhcpServer`，否则租约续期被拦会导致断网（`v0.3.8` 起 `Install` 会自动拦截未配 `-DhcpServer` 的 DHCP 网卡）；新增 USB 网卡或热点要先 `-Action Remove` 再用新参数 `-Action Install`，两步之间这些网卡不受保护。 |
 | 分流模式下程序直查路由器 53 端口旁路 DNS | `Manage-WindowsLanDnsGuard.ps1`、`build_lan_dns_guard.py` | **离线解析影响**：安装后一旦关闭代理或 TUN，系统 DNS 指向家用路由器或公司 `10.x` 内网 DNS 的网络会全部解析失败；临时裸连前需运行 `-Action Remove` 精准卸载。 |
 | 宿主机时区/语言、CLI 防外联漏配与防火墙审计 | `audit_client_boundary.py`、`Inspect-WindowsFirewall.ps1`、`Inspect-WindowsProxy.ps1` | 默认全部只读并自动脱敏个人路径与网卡名；仅反映检查时刻的本机状态，不能替代受控断线演练。 |
-| 体检结果盲区隐匿 & 本地 MCP 跨界 | `environment_report.py`（合并 `audit_client_boundary.py` + 三态摘要 + `--html-out` 离线可打印报告） | 离线报告将外部出口信誉、运行态 GPU/TPM 与平台政策固定标为 `unknown`，**不代表自动通过**；MCP 盘点只统计数量、不读取命令和密钥，需人工核对具体桥接用途。 |
-| Android 规则拼写错漏、后台杀进程与原生边界 | `mobile/android-v2rayng-claude-routing.json`、`mobile/validate_android_v2rayng.py`、`mobile/README.md` | 静态校验脚本不包含 Xray 核心，只校验规则结构与域名完整度；导入后务必重启 VPN 服务并在真机核对「始终开启 VPN」与电池白名单。 |
-| 客户端配置与本地数据损坏、误删或明文密钥外泄 | `config_snapshot.py`、`claude_local_data.py` | 快照默认拒绝网络盘/符号链接并拦截配置文件中的明文密钥，Windows 自动设置私有 NTFS ACL；仍应保存在启用了磁盘加密的本机私人目录中。 |
+| 体检结果盲区隐匿 & 本地 MCP 跨界 | `environment_report.py`（合并 `audit_client_boundary.py` + 三态摘要 + `--html-out` 离线可打印报告） | 离线报告将外部出口信誉、运行态 GPU/TPM 与平台政策固定标为 `unknown`，**不代表自动通过**；MCP 盘点只统计数量、不读取命令和密钥，需人工核对具体桥接用途；体检单不含用户名路径，但带着宿主机时区、UTC 偏移和区域语言。 |
+| Android 规则拼写错漏、后台杀进程与原生边界 | `mobile/android-v2rayng-claude-routing.json`、`mobile/validate_android_v2rayng.py`、`mobile/README.md` | 静态校验脚本不包含 Xray 核心，只做规则结构检查，不逐条比对 13 条规则，改过的文件也可能通过；导入后务必重启 VPN 服务并在真机核对「始终开启 VPN」与电池白名单。 |
+| 客户端配置与本地数据损坏、误删或明文密钥外泄 | `config_snapshot.py`、`claude_local_data.py` | 两者都拒绝网络盘和符号链接，Windows 自动设置私有 NTFS ACL。明文密钥检查只有 `claude_local_data.py` 有：对 `settings.json`、`settings.local.json`、`.mcp.json` 做启发式检查，会话记录不查；`config_snapshot.py` 的快照是明文，含订阅和口令。仍应保存在启用了磁盘加密的本机私人目录中（脚本不检查磁盘是否加密）。 |
 
 ---
 

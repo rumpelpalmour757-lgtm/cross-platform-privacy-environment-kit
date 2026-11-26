@@ -1,6 +1,9 @@
 (function () {
   "use strict";
 
+  // 与 environment_report.py 的 KIT_VERSION 保持一致（test_public_release.py 会核对）。
+  const KIT_VERSION = "0.4.2";
+
   /* ==================== 与 build_routing.py 严格同步的常量 ==================== */
   const LOCAL_NETWORKS = [
     "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16",
@@ -91,6 +94,20 @@
   /* ==================== 与 build_kill_switch.py 严格同步的算法 ==================== */
   const KS_PREFIX = "CPPEK-KillSwitch-v1-";
   const DHCP_BROADCAST_INT = 0xffffffff;
+  const NON_TCP_UDP_PROTOCOLS = [
+    ["ExceptionProtoICMPv4", "ICMPv4"],
+    ["ExceptionProtoIGMP", "2"],
+    ["ExceptionProtoIPv4Encap", "4"],
+    ["ExceptionProtoIPv6Encap", "41"],
+    ["ExceptionProtoGRE", "47"],
+    ["ExceptionProtoESP", "50"],
+    ["ExceptionProtoAH", "51"],
+    ["ExceptionProtoSCTP", "132"]
+  ];
+  // Python 的 str.isprintable() 判为不可打印的字符：控制、格式、代理、私用、未分配、行/段分隔符，以及普通空格以外的空白。
+  const NON_PRINTABLE = /[\p{C}\p{Zl}\p{Zp}]|(?! )\p{Zs}/u;
+  // PowerShell 把这几种弯单引号也当作单引号，放进生成的命令会弄乱引号，所以网页直接拒绝。
+  const CURLY_SINGLE_QUOTES = /[‘’‚‛]/;
 
   function parseIpv4(raw) {
     const text = String(raw || "").trim();
@@ -192,14 +209,39 @@
       ) {
         return { error: "网卡名称不可包含通配符、引号、反斜杠或为 Any：" + name };
       }
+      if (NON_PRINTABLE.test(name)) {
+        return { error: "网卡名称里有控制字符、制表符或零宽空格这类不可见字符，请从 Get-NetAdapter 的输出里重新复制：" + name };
+      }
+      if (CURLY_SINGLE_QUOTES.test(name)) {
+        return { error: "网卡名称不可包含弯引号（‘ ’）：" + name };
+      }
       const key = name.toLowerCase();
       if (seen.has(key)) {
         return { error: "物理网卡名称有重复：" + name };
       }
       seen.add(key);
     }
-    cleaned.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+    // 与 Python 的 sorted(key=str.casefold) 一样按小写后的码点排序，不按区域语言排序。
+    cleaned.sort((a, b) => {
+      const ka = a.toLowerCase();
+      const kb = b.toLowerCase();
+      return ka < kb ? -1 : (ka > kb ? 1 : 0);
+    });
     return { aliases: cleaned };
+  }
+
+  function ksRule(suffix, addresses, protocol, remotePorts, localPorts) {
+    return {
+      Name: KS_PREFIX + suffix,
+      RemoteAddresses: addresses,
+      Protocol: protocol || "Any",
+      RemotePorts: remotePorts || [],
+      LocalPorts: localPorts || []
+    };
+  }
+
+  function renderRanges(ranges, render) {
+    return ranges.map(([lo, hi]) => (lo === hi ? render(lo) : render(lo) + "-" + render(hi)));
   }
 
   function computeKillSwitchPlan(input) {
@@ -245,27 +287,29 @@
     const dhcpServerInts = Array.from(dhcpIntsSet).sort((a, b) => a - b);
     const dhcpAddressesInts = dhcpServerInts.length ? dhcpServerInts.concat([DHCP_BROADCAST_INT]) : [];
     const excInts = Array.from(new Set([upstreamInt].concat(dhcpAddressesInts))).sort((a, b) => a - b);
-    const ipv4Other = complementRanges(0, 0xffffffff, excInts).map(([lo, hi]) => (
-      lo === hi ? intToIpv4(lo) : intToIpv4(lo) + "-" + intToIpv4(hi)
-    ));
-    const blockedUpstreamPorts = complementRanges(1, 65535, [port]).map(([lo, hi]) => (
-      lo === hi ? String(lo) : lo + "-" + hi
-    ));
+    const ipv4Other = renderRanges(complementRanges(0, 0xffffffff, excInts), intToIpv4);
+    const portRanges = (excluded) => renderRanges(complementRanges(0, 65535, [excluded]), String);
+    const upstreamAddresses = [intToIpv4(upstreamInt)];
+    const exceptionAddresses = excInts.map(intToIpv4);
 
+    // 规则名、顺序、协议和端口区间与 build_kill_switch.py / Manage-WindowsKillSwitch.ps1 相同。
     const rules = [
-      { Name: KS_PREFIX + "IPv6All", Protocol: "Any", RemoteAddresses: ["0000::/0"] },
-      { Name: KS_PREFIX + "IPv4Other", Protocol: "Any", RemoteAddresses: ipv4Other },
-      { Name: KS_PREFIX + "UpstreamOtherTransport", Protocol: otherProto, RemoteAddresses: [intToIpv4(upstreamInt)] },
-      { Name: KS_PREFIX + "UpstreamOtherPorts", Protocol: proto, RemoteAddresses: [intToIpv4(upstreamInt)], RemotePorts: blockedUpstreamPorts }
+      ksRule("IPv4OtherAddresses", ipv4Other),
+      ksRule("IPv6", ["::/0"]),
+      ksRule("UpstreamOtherTransport", upstreamAddresses, otherProto),
+      ksRule("UpstreamOtherPorts", upstreamAddresses, proto, portRanges(port))
     ];
+    NON_TCP_UDP_PROTOCOLS.forEach(([suffix, protocol]) => {
+      rules.push(ksRule(suffix, exceptionAddresses.slice(), protocol));
+    });
     if (dhcpAddressesInts.length) {
+      const dhcpAddresses = dhcpAddressesInts.map(intToIpv4);
       rules.push(
-        { Name: KS_PREFIX + "DhcpTCP", Protocol: "TCP", RemoteAddresses: dhcpAddressesInts.map(intToIpv4) },
-        { Name: KS_PREFIX + "DhcpOtherRemotePorts", Protocol: "UDP", RemoteAddresses: dhcpAddressesInts.map(intToIpv4), RemotePorts: ["1-66", "68-65535"] },
-        { Name: KS_PREFIX + "DhcpOtherLocalPorts", Protocol: "UDP", RemoteAddresses: dhcpAddressesInts.map(intToIpv4), RemotePorts: ["67"], LocalPorts: ["1-67", "69-65535"] }
+        ksRule("DhcpTcp", dhcpAddresses.slice(), "TCP"),
+        ksRule("DhcpOtherRemotePorts", dhcpAddresses.slice(), "UDP", portRanges(67)),
+        ksRule("DhcpOtherLocalPorts", dhcpAddresses.slice(), "UDP", ["67"], portRanges(68))
       );
     }
-    rules.push({ Name: KS_PREFIX + "ExceptionNonTcpUdp (8 rules)", Protocol: "ICMPv4/IGMP/GRE/ESP/AH/SCTP...", RemoteAddresses: excInts.map(intToIpv4) });
 
     return {
       aliases: ifaceRes.aliases,
@@ -276,15 +320,15 @@
       dhcpMissingWarning: Boolean(input.usesDhcp) && dhcpServerInts.length === 0,
       docSampleNotice: isDocSample,
       ipv4BlockedRanges: ipv4Other,
-      ruleSummaryCount: 12 + (dhcpAddressesInts.length ? 3 : 0),
+      ruleCount: rules.length,
       previewJson: {
-        SchemaVersion: 1,
+        SchemaVersion: 2,
         InterfaceAliases: ifaceRes.aliases,
-        AllowedUpstream: intToIpv4(upstreamInt) + ":" + port + "/" + proto,
-        AllowedDhcpServers: dhcpServerInts.map(intToIpv4),
-        BlockedIPv4ComplementRanges: ipv4Other,
-        TotalFirewallRulesPerAdapter: 12 + (dhcpAddressesInts.length ? 3 : 0),
-        CoreRulesPreview: rules
+        UpstreamAddress: intToIpv4(upstreamInt),
+        UpstreamPort: port,
+        UpstreamProtocol: proto,
+        DhcpServers: dhcpServerInts.map(intToIpv4),
+        Rules: rules
       }
     };
   }
@@ -318,7 +362,9 @@
         "# 1. 一键导出三态体检单与可打印 HTML（含边界与 MCP 盘点）",
         "python3 environment_report.py --html-out ./env-health.html",
         "",
-        "# 2. 备份与核验本地配置状态（自动拦截明文密钥）",
+        "# 2. 盘点并备份 Claude 本地数据（备份前检查 settings / .mcp.json 里的明文密钥）",
+        "# 目标目录要先建好，而且只有自己能访问",
+        "mkdir -m 700 ~/claude-backups",
         "python3 claude_local_data.py audit",
         "python3 claude_local_data.py backup --destination ~/claude-backups"
       ].join("\n"),
@@ -328,7 +374,7 @@
       id: "android",
       label: "Android（v2rayNG）",
       badge: "13 条规则 + 二维码",
-      summary: "随包提供已修正拼写并补齐 30 个生态域名的 13 条规则集、扫码直导二维码与离线结构校验脚本。",
+      summary: "随包提供已修正拼写并补齐 30 项生态条目的 13 条规则集、扫码直导二维码与离线结构校验脚本（只查结构，不逐条比对规则）。",
       files: ["mobile/android-v2rayng-claude-routing.json", "mobile/android-v2rayng-claude-routing-qr.png", "mobile/validate_android_v2rayng.py", "mobile/README.md"],
       commands: [
         "# 桌面端静态核验随包 Android 规则文件",
@@ -357,16 +403,17 @@
       id: "backup",
       label: "本地备份与恢复",
       badge: "防误删 + 私有 ACL",
-      summary: "为 v2rayN 配置目录与 Claude 本地数据目录提供带 SHA-256 清单、拒绝符号链接/网络盘与明文密钥拦截的安全快照。",
+      summary: "为 v2rayN 配置目录与 Claude 本地数据目录提供带 SHA-256 清单、拒绝符号链接与网络盘的私有快照。明文密钥检查只有 claude_local_data.py 有；config_snapshot.py 的快照是明文，含订阅与口令。",
       files: ["config_snapshot.py", "claude_local_data.py"],
       commands: [
-        "# Claude 本地数据安全备份与验证",
+        "# Claude 本地数据安全备份与验证（目标目录要先建好，只有自己能访问）",
         "py -3 .\\claude_local_data.py audit",
         "py -3 .\\claude_local_data.py backup --destination \"C:\\Users\\<你的用户名>\\claude-backups\"",
         "py -3 .\\claude_local_data.py verify \"<快照目录>\"",
         "",
-        "# v2rayN 配置目录快照备份与验证",
-        "py -3 .\\config_snapshot.py backup --config-dir \"<实际 guiConfigs 路径>\""
+        "# v2rayN 配置目录快照备份与验证（不检查明文密钥；不加 --backup-root 时放在 ~/clash-guard-backup）",
+        "py -3 .\\config_snapshot.py backup --config-dir \"<实际 guiConfigs 路径>\"",
+        "py -3 .\\config_snapshot.py verify \"<快照目录>\""
       ].join("\n"),
       note: "备份快照为明文目录，虽然 Windows 会自动设当前账户私有 NTFS 权限，仍请存放在启用了 BitLocker/FileVault 的本地盘，远离云盘同步目录。"
     }
@@ -377,7 +424,7 @@
       num: 1,
       title: "只读体检与客户端边界识别",
       scripts: ["environment_report.py", "audit_client_boundary.py", "Inspect-WindowsProxy.ps1", "Inspect-WindowsFirewall.ps1", "inspect_unix_network.py"],
-      solves: "一键输出三态摘要（已通过 / 存在缺口 / 未知盲区）与可打印离线 HTML 体检单，覆盖路由与 IPv6 暴露面、防火墙状态、宿主机时区/语言、CLI 5 项防外联开关、本地 MCP 桥接数量及 MSIX 放行规则。",
+      solves: "一键输出三态摘要（已通过 / 存在缺口 / 未知盲区）与可打印离线 HTML 体检单，覆盖路由与 IPv6 暴露面、防火墙状态、宿主机时区/语言、CLI 5 项防外联开关、本地 MCP 桥接数量，并报告是否装了桌面端；MSIX 放行规则的数量要看 Inspect-WindowsFirewall.ps1。",
       tradeoff: "所有输出自动脱敏个人路径、网卡名与 MCP 命令；出口 IP 历史信誉、运行态 GPU/TPM 与平台政策显式标为 unknown，不能替代受控断线演练。"
     },
     {
@@ -385,7 +432,7 @@
       title: "统一路由、远端 DoH 与防 502 策略",
       scripts: ["build_routing.py", "routing-claude-ecosystem.json", "routing-claude-global.json", "claude-doh-domains.txt", "mobile/*"],
       solves: "把 30 个核心与外围生态域及 160.79.104.0/21 置顶在国内直连规则之前并绑定远端 DoH，同时阻断 UDP/443 QUIC 与 Anthropic IPv6 502 前缀。",
-      tradeoff: "分流模式下把 cdnjs、jsdelivr、sentry.io、stripe.com 等公共域置顶代理，会让国内网站加载同类静态资源时稍有绕路。"
+      tradeoff: "分流模式下把 cdnjs、jsdelivr、sentry.io、stripe.com 等公共域置顶代理，会让国内网站加载同类静态资源时稍有绕路；UDP/443 阻断对所有目的地生效，国内直连站点的 HTTP/3 也会回落到 TCP。"
     },
     {
       num: 3,
@@ -398,8 +445,8 @@
       num: 4,
       title: "安全快照备份、验证与防密钥泄露",
       scripts: ["config_snapshot.py", "claude_local_data.py"],
-      solves: "在调整网络或环境前生成带完整性清单的快照，拒绝网络盘与符号链接，自动检测并拦停配置文件中的明文 API Key / Token。",
-      tradeoff: "如配置文件中确实保留明文密钥，需显式移入环境变量/系统钥匙串，或主动传 --allow-inline-secrets 后方可备份。"
+      solves: "在调整网络或环境前生成带完整性清单的快照，拒绝网络盘与符号链接；claude_local_data.py 备份前对 settings.json、settings.local.json、.mcp.json 做明文密钥启发式检查（会话记录不查），config_snapshot.py 不做这项检查。",
+      tradeoff: "如 Claude 配置文件中确实保留明文密钥，需显式移入环境变量/系统钥匙串，或主动传 --allow-inline-secrets（照样备份，并列出放过的文件和键名）；按文件名排除的 .env*、密钥和凭据文件不在备份里。"
     }
   ];
 
@@ -410,7 +457,7 @@
       filename: "routing-claude-ecosystem.json",
       opts: { externalFirstXray: false, globalProxy: false, claudeEcosystem: true },
       validateCmd: "py -3 .\\build_routing.py validate .\\routing-claude-ecosystem.json --claude-ecosystem",
-      summary: "保留国内域名与 IP 直连，同时将 UDP/443、Anthropic IPv6（防 502）、30 个核心与外围生态域以及 160.79.104.0/21 置顶在国内直连之前。推荐配合 LAN DNS Guard 与远端 DoH 使用。"
+      summary: "保留国内域名与 IP 直连，同时将 UDP/443、Anthropic IPv6（防 502）、30 项核心与外围生态条目以及 160.79.104.0/21 置顶在国内直连之前。推荐配合 LAN DNS Guard 与远端 DoH 使用。"
     },
     {
       id: "eco-global",
@@ -574,7 +621,9 @@
   function loadChecklistState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : {};
+      const parsed = raw ? JSON.parse(raw) : {};
+      // 存储被改坏（例如存的是 null、数组或数字）时按空记录处理，不让页面初始化中途停下。
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
     } catch (_err) {
       return {};
     }
@@ -650,6 +699,26 @@
       .replace(/"/g, "&quot;");
   }
 
+  // 整块重画以后把键盘焦点放回刚才操作的那个控件，免得键盘和读屏用户每次都要从头找。
+  function restoreFocus(container, selector) {
+    if (!container) return;
+    const target = container.querySelector(selector);
+    if (target && typeof target.focus === "function") {
+      target.focus();
+    }
+  }
+
+  // 导出文件名和标题用本地日期，不用 UTC 日期。
+  function localDateStamp() {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate());
+  }
+
+  function prefersReducedMotion() {
+    return Boolean(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+  }
+
   /* ==================== 主题切换 ==================== */
   function applyTheme(theme) {
     const root = document.documentElement;
@@ -695,7 +764,7 @@
     if (dockMsg) {
       dockMsg.textContent = TAB_DOCK_TIPS[tabId] || HAJIMI_TIPS[tipIndex];
     }
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? "auto" : "smooth" });
   }
 
   /* ==================== 渲染 Tab 1: 总览 ==================== */
@@ -704,12 +773,13 @@
     const detail = document.getElementById("platformDetail");
     if (!chips || !detail) return;
     chips.innerHTML = PLATFORMS.map((p) => (
-      `<button type="button" class="chip ${p.id === activePlatform ? "active" : ""}" data-platform="${p.id}">${escapeHtml(p.label)}</button>`
+      `<button type="button" class="chip ${p.id === activePlatform ? "active" : ""}" data-platform="${p.id}" aria-pressed="${p.id === activePlatform}">${escapeHtml(p.label)}</button>`
     )).join("");
     chips.querySelectorAll(".chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         activePlatform = btn.dataset.platform;
         renderPlatforms();
+        restoreFocus(chips, '[data-platform="' + activePlatform + '"]');
       });
     });
 
@@ -750,7 +820,7 @@
     const detail = document.getElementById("layerDetail");
     if (!list || !detail) return;
     list.innerHTML = LAYERS.map((l) => `
-      <button type="button" class="layer-card ${l.num === activeLayer ? "active" : ""}" data-layer="${l.num}">
+      <button type="button" class="layer-card ${l.num === activeLayer ? "active" : ""}" data-layer="${l.num}" aria-pressed="${l.num === activeLayer}">
         <span class="layer-num">${l.num}</span>
         <strong>${escapeHtml(l.title)}</strong>
       </button>
@@ -759,6 +829,7 @@
       btn.addEventListener("click", () => {
         activeLayer = Number(btn.dataset.layer);
         renderLayers();
+        restoreFocus(list, '[data-layer="' + activeLayer + '"]');
       });
     });
     const cur = LAYERS.find((l) => l.num === activeLayer) || LAYERS[0];
@@ -788,12 +859,13 @@
     if (!chips || !out) return;
 
     chips.innerHTML = ROUTING_PRESETS.map((p) => (
-      `<button type="button" class="chip ${p.id === activePreset ? "active" : ""}" data-preset="${p.id}">${escapeHtml(p.label)}</button>`
+      `<button type="button" class="chip ${p.id === activePreset ? "active" : ""}" data-preset="${p.id}" aria-pressed="${p.id === activePreset}">${escapeHtml(p.label)}</button>`
     )).join("");
     chips.querySelectorAll(".chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         activePreset = btn.dataset.preset;
         renderRouting();
+        restoreFocus(chips, '[data-preset="' + activePreset + '"]');
       });
     });
 
@@ -834,12 +906,13 @@
     const cats = ["全部", "核心业务", "观测遥测", "风控验证", "支付客服", "身份核验", "Artifact CDN"];
     catChips.innerHTML = cats.map((c) => {
       const count = c === "全部" ? ECOSYSTEM_ITEMS.length : ECOSYSTEM_ITEMS.filter((i) => i.cat === c).length;
-      return `<button type="button" class="chip ${c === activeDomainCat ? "active" : ""}" data-cat="${escapeHtml(c)}">${escapeHtml(c)} (${count})</button>`;
+      return `<button type="button" class="chip ${c === activeDomainCat ? "active" : ""}" data-cat="${escapeHtml(c)}" aria-pressed="${c === activeDomainCat}">${escapeHtml(c)} (${count})</button>`;
     }).join("");
     catChips.querySelectorAll(".chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         activeDomainCat = btn.dataset.cat;
         renderDomainExplorer();
+        restoreFocus(catChips, '[data-cat="' + activeDomainCat + '"]');
       });
     });
 
@@ -855,10 +928,62 @@
   }
 
   /* ==================== 渲染 Tab 3: 防火墙规划器 ==================== */
+  // 生成规划器里的四段命令。预览与安装、卸载分开放：一起粘贴执行等于装完马上又卸掉。
+  function buildPlannerCommands(res) {
+    const lanCmd = [
+      "# 1. 只读预览物理网卡 53 端口旁路阻断规则",
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Preview -IncludeAllPhysicalAdapters",
+      "",
+      "# 2. 管理员 PowerShell 安装（安装前导出 .wfw 备份）并检查状态（看 MatchedPlan）",
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Install -IncludeAllPhysicalAdapters",
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Status -IncludeAllPhysicalAdapters"
+    ].join("\n");
+    // 卸载命令单独一块、单独复制：和安装命令一起粘贴执行等于装完马上又卸掉。
+    const lanRemoveCmd = [
+      "# 临时停用代理或卸载时，在管理员 PowerShell 移除这 4 条规则",
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Remove"
+    ].join("\n");
+    const ksRemoveCmd = [
+      "# 恢复连接：在管理员窗口离线卸载（不依赖当前窗口的执行策略设置），再核对状态",
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Remove",
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Status",
+      "# Status 输出里的 ForeignOrUnexpectedRules 应为空；脚本跑不起来时用 WINDOWS-KILL-SWITCH.md 里的手工撤销命令"
+    ].join("\n");
+    let ksCmd = null;
+    if (!res.error) {
+      const aliasPs = "@(" + res.aliases.map((a) => "'" + a.replace(/'/g, "''") + "'").join(", ") + ")";
+      const dhcpLine = res.dhcpServers.length
+        ? "  DhcpServer       = @(" + res.dhcpServers.map((d) => "'" + d + "'").join(", ") + ")\n"
+        : "";
+      // 和 WINDOWS-KILL-SWITCH.md 相同的写法：在同一个 PowerShell 会话里用 & 调用并展开 @settings。
+      // 把哈希表展开传给 powershell.exe -File 这种外部程序时，多个网卡名和开关参数不能可靠地传进去。
+      ksCmd = [
+        "# 每个新开的 PowerShell 窗口先执行一次（只对当前窗口生效，不改系统设置）",
+        "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass",
+        "",
+        "$settings = @{",
+        "  InterfaceAlias   = " + aliasPs,
+        "  UpstreamAddress  = '" + res.upstreamIp + "'",
+        "  UpstreamPort     = " + res.port,
+        "  UpstreamProtocol = '" + res.protocol + "'",
+        dhcpLine + "}",
+        "",
+        "# 1. 普通权限只读预览（不改系统）",
+        "& .\\Manage-WindowsKillSwitch.ps1 -Action Preview @settings",
+        "",
+        "# 2. 管理员 PowerShell 安装并核对状态（管理员窗口里同样先执行上面的 Set-ExecutionPolicy 和 $settings）",
+        "& .\\Manage-WindowsKillSwitch.ps1 -Action Install @settings",
+        "& .\\Manage-WindowsKillSwitch.ps1 -Action Status @settings"
+      ].join("\n");
+    }
+    return { lanCmd, lanRemoveCmd, ksRemoveCmd, ksCmd };
+  }
+
   function renderFirewallPlanner() {
     const ifaces = (document.getElementById("ksInterfaces").value || "").split(",");
     const upstreamIp = document.getElementById("ksUpstreamIp").value || "";
-    const port = document.getElementById("ksPort").value || "443";
+    // 端口框清空时不再悄悄当成 443，交给校验报错。
+    const port = document.getElementById("ksPort").value;
     const protocol = document.getElementById("ksProto").value || "TCP";
     const dhcpRaw = document.getElementById("ksDhcp").value || "";
     const usesDhcp = document.getElementById("ksUsesDhcp").checked;
@@ -868,6 +993,8 @@
     const planOut = document.getElementById("ksPlanOutput");
     const cmdOut = document.getElementById("ksCmdOutput");
     const lanOut = document.getElementById("lanDnsCmdOutput");
+    const ksRemoveOut = document.getElementById("ksRemoveCmdOutput");
+    const lanRemoveOut = document.getElementById("lanDnsRemoveCmdOutput");
 
     const res = computeKillSwitchPlan({
       interfaces: ifaces,
@@ -878,19 +1005,23 @@
       usesDhcp: usesDhcp
     });
 
-    const lanCmd = [
-      "# 1. 只读预览物理网卡 53 端口旁路阻断规则",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Preview -IncludeAllPhysicalAdapters",
-      "",
-      "# 2. 管理员 PowerShell 安装并检查状态",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Install -IncludeAllPhysicalAdapters",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Status -IncludeAllPhysicalAdapters",
-      "",
-      "# 3. 临时停用代理或卸载时，精准移除全部 4 条规则",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Remove"
-    ].join("\n");
-    lanOut.textContent = lanCmd;
-    document.getElementById("copyLanDnsCmdBtn").onclick = () => copyText(lanCmd, "已复制 LAN DNS Guard 命令");
+    const cmds = buildPlannerCommands(res);
+    lanOut.textContent = cmds.lanCmd;
+    document.getElementById("copyLanDnsCmdBtn").onclick = () => copyText(cmds.lanCmd, "已复制 LAN DNS Guard 预览与安装命令");
+    if (lanRemoveOut) {
+      lanRemoveOut.textContent = cmds.lanRemoveCmd;
+    }
+    const copyLanRemove = document.getElementById("copyLanDnsRemoveBtn");
+    if (copyLanRemove) {
+      copyLanRemove.onclick = () => copyText(cmds.lanRemoveCmd, "已复制 LAN DNS Guard 卸载命令");
+    }
+    if (ksRemoveOut) {
+      ksRemoveOut.textContent = cmds.ksRemoveCmd;
+    }
+    const copyKsRemove = document.getElementById("copyKsRemoveBtn");
+    if (copyKsRemove) {
+      copyKsRemove.onclick = () => copyText(cmds.ksRemoveCmd, "已复制断网开关卸载命令");
+    }
 
     if (res.error) {
       alertBox.innerHTML = `<div class="callout callout-danger"><strong>输入校验未通过：</strong>${escapeHtml(res.error)}</div>`;
@@ -918,33 +1049,12 @@
       );
     }
     alertBox.innerHTML = alerts.join("");
-    badge.textContent = "每张网卡 " + res.ruleSummaryCount + " 条显式阻断规则";
+    // 规则对所选的全部网卡共用，不是每张网卡各一套。
+    badge.textContent = "共 " + res.ruleCount + " 条显式阻断规则（所选网卡共用）";
     planOut.textContent = JSON.stringify(res.previewJson, null, 2);
 
-    const aliasPs = "@(" + res.aliases.map((a) => "'" + a.replace(/'/g, "''") + "'").join(", ") + ")";
-    const dhcpLine = res.dhcpServers.length
-      ? "  DhcpServer       = @(" + res.dhcpServers.map((d) => "'" + d + "'").join(", ") + ")\n"
-      : "";
-    const ksCmd = [
-      "$settings = @{",
-      "  InterfaceAlias   = " + aliasPs,
-      "  UpstreamAddress  = '" + res.upstreamIp + "'",
-      "  UpstreamPort     = " + res.port,
-      "  UpstreamProtocol = '" + res.protocol + "'",
-      dhcpLine + "}",
-      "",
-      "# 1. 普通权限只读预览（不改系统）",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Preview @settings",
-      "",
-      "# 2. 管理员 PowerShell 安装并核对状态",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Install @settings",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Status @settings",
-      "",
-      "# 3. 随时一键精准卸载",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Remove"
-    ].join("\n");
-    cmdOut.textContent = ksCmd;
-    document.getElementById("copyKsCmdBtn").onclick = () => copyText(ksCmd, "已复制 Windows 断网开关命令");
+    cmdOut.textContent = cmds.ksCmd;
+    document.getElementById("copyKsCmdBtn").onclick = () => copyText(cmds.ksCmd, "已复制 Windows 断网开关预览与安装命令");
   }
 
   /* ==================== 渲染 Tab 4: 交互式自检清单 ==================== */
@@ -960,12 +1070,13 @@
     catChips.innerHTML = cats.map((c) => {
       const list = c === "全部" ? CHECKLIST_ITEMS : CHECKLIST_ITEMS.filter((i) => i.cat === c);
       const done = list.filter((i) => checklistState[i.id]).length;
-      return `<button type="button" class="chip ${c === activeCheckCat ? "active" : ""}" data-cat="${escapeHtml(c)}">${escapeHtml(c)} (${done}/${list.length})</button>`;
+      return `<button type="button" class="chip ${c === activeCheckCat ? "active" : ""}" data-cat="${escapeHtml(c)}" aria-pressed="${c === activeCheckCat}">${escapeHtml(c)} (${done}/${list.length})</button>`;
     }).join("");
     catChips.querySelectorAll(".chip").forEach((btn) => {
       btn.addEventListener("click", () => {
         activeCheckCat = btn.dataset.cat;
         renderChecklist();
+        restoreFocus(catChips, '[data-cat="' + activeCheckCat + '"]');
       });
     });
 
@@ -1008,19 +1119,21 @@
 
     container.querySelectorAll('input[type="checkbox"]').forEach((box) => {
       box.addEventListener("change", () => {
-        checklistState[box.dataset.checkId] = box.checked;
+        const checkId = box.dataset.checkId;
+        checklistState[checkId] = box.checked;
         saveChecklistState(checklistState);
         renderChecklist();
+        restoreFocus(container, 'input[data-check-id="' + checkId + '"]');
       });
     });
   }
 
   function exportChecklistMarkdown() {
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = localDateStamp();
     const lines = [
       `# 跨平台网络隐私环境自检记录（${stamp}）`,
       "",
-      `> 由跨平台网络隐私与本机环境工具包 v0.4.1 离线工作台本地导出，不含账号凭据或节点信息。`,
+      `> 由跨平台网络隐私与本机环境工具包 v${KIT_VERSION} 离线工作台本地导出，不含账号凭据或节点信息。`,
       ""
     ];
     CHECKLIST_ITEMS.forEach((item) => {
@@ -1032,9 +1145,9 @@
   }
 
   function exportChecklistJson() {
-    const stamp = new Date().toISOString().slice(0, 10);
+    const stamp = localDateStamp();
     const payload = {
-      kitVersion: "0.4.1",
+      kitVersion: KIT_VERSION,
       exportedAt: new Date().toISOString(),
       completedCount: CHECKLIST_ITEMS.filter((i) => checklistState[i.id]).length,
       totalCount: CHECKLIST_ITEMS.length,
@@ -1136,6 +1249,15 @@
     if (nextTipBtn) {
       nextTipBtn.addEventListener("click", () => showNextHajimiTip(false));
     }
+    if (pop && fab) {
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape" && pop.classList.contains("open")) {
+          pop.classList.remove("open");
+          fab.setAttribute("aria-expanded", "false");
+          fab.focus();
+        }
+      });
+    }
     if (aboutBtn && pop && fab) {
       aboutBtn.addEventListener("click", () => {
         pop.classList.remove("open");
@@ -1143,7 +1265,7 @@
         switchTab("overview");
         setTimeout(() => {
           const sec = document.getElementById("hajimiSection");
-          if (sec) sec.scrollIntoView({ behavior: "smooth", block: "center" });
+          if (sec) sec.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "center" });
         }, 120);
       });
     }
@@ -1201,8 +1323,11 @@
 
   if (typeof module !== "undefined" && module.exports) {
     module.exports = {
+      KIT_VERSION,
       buildRoutingRules,
       computeKillSwitchPlan,
+      buildPlannerCommands,
+      loadChecklistState,
       CLAUDE_ECOSYSTEM_DOMAINS,
       LOCAL_NETWORKS,
       ANTHROPIC_IPV6_BLOCK,

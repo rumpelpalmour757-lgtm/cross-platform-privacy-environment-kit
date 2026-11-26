@@ -7,6 +7,7 @@ import json
 import ntpath
 import os
 from pathlib import Path, PurePath
+import re
 import shutil
 import stat
 import subprocess
@@ -20,11 +21,14 @@ CONFIG_NAME = "guiNConfig.json"
 MANIFEST_NAME = "manifest.json"
 PAYLOAD_NAME = "data"
 LAUNCHER_FILES = ("restore.py", "config_snapshot.py")
-DEFAULT_BACKUP_ROOT = Path.home() / "clash-guard-backup"
+DEFAULT_BACKUP_DIR_NAME = "clash-guard-backup"
 MAX_MANIFEST_BYTES = 64 * 1024 * 1024
 NETWORK_FS_TYPES = {
     "nfs", "nfs4", "cifs", "smb3", "smbfs", "ncpfs", "afs", "9p",
     "fuse.sshfs", "fuse.rclone", "davfs", "webdav",
+    # Cluster, object-store, desktop-share and VM host-share filesystems.
+    "ceph", "fuse.ceph-fuse", "glusterfs", "fuse.glusterfs", "lustre", "gpfs", "beegfs",
+    "fuse.s3fs", "fuse.gvfsd-fuse", "virtiofs", "vboxsf", "vmhgfs", "fuse.vmhgfs-fuse", "prl_fs",
 }
 PROXY_PROCESS_NAMES = (
     "v2rayN", "xray", "sing-box", "v2ray", "mihomo", "verge-mihomo", "clash",
@@ -35,6 +39,21 @@ PROXY_PROCESS_NAMES = (
 
 class SnapshotError(Exception):
     """Snapshot or recovery precondition failed."""
+
+
+def default_backup_root():
+    # Resolved on use: computing it at import time made every importer fail
+    # when the process has no home directory.
+    return Path.home() / DEFAULT_BACKUP_DIR_NAME
+
+
+def describe_names(names, limit=5):
+    """List a few entry names for an error message; repr() escapes control characters."""
+    ordered = sorted(names)
+    text = ", ".join(repr(name) for name in ordered[:limit])
+    if len(ordered) > limit:
+        text += f" and {len(ordered) - limit} more"
+    return text
 
 
 def _remove_readonly(func, path, exc):
@@ -167,7 +186,6 @@ def restrict_private_permissions(path, *, is_dir=False):
     advapi32.SetNamedSecurityInfoW.restype = wt.DWORD
 
     sid = _windows_current_user_sid()
-    inherit = "OICI;" if is_dir else ";"
     if is_dir:
         sddl = f"D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;FA;;;{sid})"
     else:
@@ -228,19 +246,30 @@ def _windows_long_path_if_exists(path_str):
     return path_str
 
 
-def _check_unix_local_fs(path):
+def _read_proc_mounts():
+    try:
+        return Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _unescape_mount_field(value):
+    # The kernel writes space, tab, newline and backslash as three-digit octal escapes.
+    return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+
+def _unix_storage_problem(path):
     if sys.platform == "darwin":
         home = Path.home()
         for cloud_dir in (home / "Library" / "Mobile Documents", home / "Library" / "CloudStorage"):
             p_fold = PurePath(os.fspath(path).casefold())
             c_fold = PurePath(os.fspath(cloud_dir).casefold())
             if p_fold == c_fold or p_fold.is_relative_to(c_fold):
-                raise SnapshotError("Cloud-synced storage directories are unsupported for plaintext snapshots.")
+                return "This path is in a cloud-synced folder. Use a local folder that is not synced."
     elif sys.platform.startswith("linux"):
-        try:
-            mounts_text = Path("/proc/mounts").read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return
+        mounts_text = _read_proc_mounts()
+        if mounts_text is None:
+            return None
         best_mount = ""
         best_fstype = ""
         target_str = os.fspath(path)
@@ -248,14 +277,16 @@ def _check_unix_local_fs(path):
             parts = line.split()
             if len(parts) < 3:
                 continue
-            mount_point = parts[1].replace("\\040", " ")
+            mount_point = _unescape_mount_field(parts[1])
             fstype = parts[2].lower()
             if (target_str == mount_point or target_str.startswith(mount_point.rstrip("/") + "/") or mount_point == "/"):
-                if len(mount_point) > len(best_mount):
+                # A later line for the same mount point is mounted on top of the earlier one.
+                if len(mount_point) >= len(best_mount):
                     best_mount = mount_point
                     best_fstype = fstype
         if best_fstype in NETWORK_FS_TYPES:
-            raise SnapshotError("Network filesystems are unsupported for plaintext snapshots.")
+            return "This path is on a network or shared filesystem. Use a path on a local disk."
+    return None
 
 
 def recorded_path(value):
@@ -276,19 +307,26 @@ def recorded_path(value):
     return Path(absolute)
 
 
-def local_path(value):
-    path = recorded_path(value)
+def storage_problem(path):
+    """Return why a normalized path is not on verified local storage, or None."""
     if sys.platform == "win32":
         root = ntpath.splitdrive(os.fspath(path))[0] + "\\"
         try:
             drive_type = _windows_drive_type(root)
-        except (AttributeError, OSError) as exc:
-            raise SnapshotError("Cannot verify that the selected drive is local.") from exc
+        except (AttributeError, OSError):
+            return "Cannot verify that the selected drive is local."
         # GetDriveTypeW: removable, fixed, optical and RAM drives are local.
         if drive_type not in {2, 3, 5, 6}:
-            raise SnapshotError("Use a verified local drive. Network or unavailable drives are unsupported.")
-    else:
-        _check_unix_local_fs(path)
+            return "Use a verified local drive. Network or unavailable drives are unsupported."
+        return None
+    return _unix_storage_problem(path)
+
+
+def local_path(value):
+    path = recorded_path(value)
+    problem = storage_problem(path)
+    if problem:
+        raise SnapshotError(problem)
     return path
 
 
@@ -438,8 +476,10 @@ import sys
 sys.dont_write_bytecode = True
 SNAPSHOT_DIR = Path(__file__).absolute().parent
 ALLOWED_ENTRIES = {{"data", "manifest.json", "config_snapshot.py", "restore.py"}}
-if any(entry.name not in ALLOWED_ENTRIES for entry in SNAPSHOT_DIR.iterdir()):
-    sys.exit("Refusing to run: unexpected files are present in the snapshot directory.")
+unexpected = sorted(entry.name for entry in SNAPSHOT_DIR.iterdir() if entry.name not in ALLOWED_ENTRIES)
+if unexpected:
+    sys.exit("Refusing to run: unexpected files are present in the snapshot directory: "
+             + ", ".join(repr(name) for name in unexpected[:5]) + ". Remove them and retry.")
 if str(SNAPSHOT_DIR) not in sys.path:
     sys.path.insert(0, str(SNAPSHOT_DIR))
 from config_snapshot import main
@@ -454,7 +494,9 @@ raise SystemExit(main([*args, *flags]))
     return {name: hash_regular_file(stage / name) for name in LAUNCHER_FILES}
 
 
-def create_snapshot(source, backup_root=DEFAULT_BACKUP_ROOT):
+def create_snapshot(source, backup_root=None):
+    if backup_root is None:
+        backup_root = default_backup_root()
     source, backup_root = local_path(source), local_path(backup_root)
     require_data_directory(source)
     ensure_distinct(source, backup_root)
@@ -494,14 +536,17 @@ def verify_snapshot(snapshot):
     allowed_entries = {PAYLOAD_NAME, MANIFEST_NAME, *LAUNCHER_FILES}
     present_entries = {entry.name for entry in snapshot.iterdir()}
     if not present_entries <= allowed_entries:
-        raise SnapshotError("The snapshot directory contains unexpected files.")
+        raise SnapshotError(
+            "The snapshot directory contains unexpected files: "
+            f"{describe_names(present_entries - allowed_entries)}. Remove them and retry."
+        )
     manifest_path = snapshot / MANIFEST_NAME
     manifest_stat = checked_stat(manifest_path)
     if not stat.S_ISREG(manifest_stat.st_mode) or manifest_stat.st_size > MAX_MANIFEST_BYTES:
         raise SnapshotError("The snapshot manifest must be a regular file.")
     try:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (UnicodeError, ValueError) as exc:
+    except (UnicodeError, ValueError, RecursionError) as exc:
         raise SnapshotError("The snapshot manifest is invalid.") from exc
     if (
         not isinstance(manifest, dict)
@@ -570,7 +615,10 @@ def _trusted_windows_system_root():
 
 def ensure_v2rayn_stopped():
     if os.name != "nt":
-        raise SnapshotError("Applying a restore requires Windows.")
+        raise SnapshotError(
+            "Applying a restore requires Windows. Elsewhere, use recover and replace the "
+            "data directory yourself while the client is closed."
+        )
     system_root = _trusted_windows_system_root()
     if not system_root:
         raise SnapshotError("Could not locate Windows PowerShell.")
@@ -650,7 +698,9 @@ def main(argv=None):
 
     backup = commands.add_parser("backup", help="Create a local, verified data-directory snapshot")
     backup.add_argument("--config-dir", required=True)
-    backup.add_argument("--backup-root", default=DEFAULT_BACKUP_ROOT)
+    backup.add_argument(
+        "--backup-root", help=f"Local parent folder for snapshots. Defaults to ~/{DEFAULT_BACKUP_DIR_NAME}.",
+    )
 
     verify = commands.add_parser("verify", help="Verify a snapshot before use")
     verify.add_argument("snapshot")
@@ -686,8 +736,9 @@ def main(argv=None):
     except SnapshotError as error:
         print(f"Snapshot operation stopped: {error}", file=sys.stderr)
         return 1
-    except (OSError, ValueError, subprocess.SubprocessError) as error:
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as error:
         # Avoid displaying exception contents that could contain local data.
+        # RuntimeError covers RecursionError and an unresolvable "~user" path.
         print(f"Snapshot operation stopped ({type(error).__name__}).", file=sys.stderr)
         return 1
     return 0

@@ -8,12 +8,36 @@ v2rayNG 是使用 Android VPN 接口的客户端之一。优先沿用自己已�
 
 ### 随包 Claude 生态规则包（13 条）
 
-> 校验范围说明：这套规则在制作时曾用作者本机的 Xray 核心做过离线语法与地理数据检查，但包内**不带 Xray**。随包的 `validate_android_v2rayng.py` 只做静态结构检查（规则数量、顺序、域名清单），不代表在你的手机上实际路由正确；导入后请按下方步骤重连并实测。
+> 校验范围说明：这套规则在制作时曾用作者本机的 Xray 核心做过离线语法与地理数据检查，但包内**不带 Xray**。随包的 `validate_android_v2rayng.py` 只做静态结构检查，**不逐条比对** 13 条规则，也不要求有兜底规则，改动过的文件也可能通过。它查的是：至少 8 条规则，每条都已启用，出站是 `proxy`、`direct`、`block` 之一，`domain`、`ip` 如果有就必须是字符串数组；含 UDP/443 阻断、两个 Anthropic IPv6 前缀的阻断、包含全部 30 项生态条目的代理规则、`160.79.104.0/21` 的代理规则、同时含 `geoip:private` 和 `100.64.0.0/10` 的直连规则；IPv6 阻断、生态条目、IPv4 网段这三条排在第一条国内直连规则（`geosite:cn` 或 `geoip:cn`）之前；直连规则不能不带条件，也不能含 `0.0.0.0/0`、`::/0` 或全端口；最后一条若是全端口规则必须走 `proxy`；不出现已知拼错的域名。通过校验不代表在你的手机上实际路由正确；导入后请按下方步骤重连并实测。
 
-本目录提供 `android-v2rayng-claude-routing.json`（剪贴板直导单行版）、`android-v2rayng-claude-routing.pretty.json`（可读版）与扫码直导二维码 `android-v2rayng-claude-routing-qr.png`：
-- 置顶阻断 `udp/443`（QUIC）及 Anthropic IPv6 前缀 `2607:6bc0::/48`、`2607:6bc0:11::/48`（防单 IPv4 出口 502）；
-- 置顶代理 30 个核心与外围生态域名（已修正 `claudemcpcontent.com` 拼写，并补齐 `datadoghq-browser-agent.com`、`hexagon-analytics.com`、`segment.com`、`statsigapi.net`、`claude.site`、`cdnjs.cloudflare.com`、`cdn.jsdelivr.net`）及 Anthropic 官方 IPv4 网段 `160.79.104.0/21`；
-- 合并 `100.64.0.0/10` 至局域网直连规则，未命中的其余公网流量默认走代理。
+本目录提供 `android-v2rayng-claude-routing.json`（剪贴板直导单行版）、`android-v2rayng-claude-routing.pretty.json`（可读版）与扫码直导二维码 `android-v2rayng-claude-routing-qr.png`。13 条规则按顺序是：
+
+| 顺序 | 匹配 | 去向 |
+| --- | --- | --- |
+| 1 | `udp` 的 `443` 端口（QUIC），不分目的地 | 阻断 |
+| 2 | Anthropic IPv6 前缀 `2607:6bc0::/48`、`2607:6bc0:11::/48`（防单 IPv4 出口 502） | 阻断 |
+| 3 | 30 项核心与外围生态条目 | 代理 |
+| 4 | Anthropic 官方 IPv4 网段 `160.79.104.0/21` | 代理 |
+| 5 | `geoip:private` 与 `100.64.0.0/10` | 直连 |
+| 6 | `geosite:private` | 直连 |
+| 7 | 微信的 3 个域名、`geosite:bilibili`、关键词 `mirrorakam` | 直连 |
+| 8 | `geosite:geolocation-!cn`、`googletagmanager.com`、`doubleclick.net` | 代理 |
+| 9 | `geosite:google` | 代理 |
+| 10 | 35 个国内公共 DNS 服务器地址 | 直连 |
+| 11 | 5 个国内公共 DNS 服务域名 | 直连 |
+| 12 | `geosite:cn` | 直连 |
+| 13 | `geoip:cn` | 直连 |
+
+- 第 3 条的 30 项与桌面版 `claude-doh-domains.txt` 相同（29 条域名后缀加 1 条关键词 `browser-intake`），已修正 `claudemcpcontent.com` 拼写，并补齐 `datadoghq-browser-agent.com`、`hexagon-analytics.com`、`segment.com`、`statsigapi.net`、`claude.site`、`cdnjs.cloudflare.com`、`cdn.jsdelivr.net`。
+- 第 7 到 13 条是通用的国内外分流，导入后你原有的分流习惯会跟着变。
+- 第 1 条对所有目的地生效：国内直连站点的 HTTP/3 也会被丢弃、回落到 TCP；进了隧道的局域网 UDP/443（个别 NAS 的 HTTP/3、部分 VPN 的 DTLS 通道）同样会被丢弃。
+- 规则包**没有兜底规则**。13 条都没命中的流量走哪里，取决于 v2rayNG 自身的默认行为，没有在真机上核对。
+- 需要手机上的地理数据文件含这些分类：geosite 的 `private`、`bilibili`、`geolocation-!cn`、`google`、`cn`，geoip 的 `private`、`cn`。
+- 局域网直连的写法三端不同：Android 用 `geoip:private` 加 `100.64.0.0/10`，`geoip:private` 实际包含哪些网段取决于手机上的地理数据文件，没有核对；桌面模板列的是 9 个显式网段，不用宽泛的保留地址数据集，免得把虚拟 DNS 用的合成地址段算进直连；iOS 模板的 9 个网段里有 8 个和桌面相同，只差 IPv6 唯一本地地址：桌面写 `fd00::/8`，iOS 写 `fc00::/7`。
+- 域名策略：这套规则在哪种域名策略下检查过没有记录，各种策略都没有实机测过。第 2 条按 IP 阻断，排在第 3 条按域名代理之前；如果选的策略在遇到 IP 规则时先解析域名（如 `IPOnDemand`），解析出这两个 IPv6 前缀地址的主机名可能在第 2 条就被阻断，表现为打不开。桌面端文档建议的是 `AsIs`。
+- 二维码已经用到版本 39、纠错级别 L，装着单行版的 2776 字节；单个二维码最多装 2953 字节（版本 40、纠错级别 L），规则包再加六七个域名条目就放不进一个码。
+
+> 导入前先备份现有规则：在 `v2rayNG` → 路由设置的右上角菜单里找导出规则集到剪贴板的选项（名称以所装版本为准），把导出的内容粘贴保存到本机文件。导入是替换原有规则还是追加，没有在真机上核对过，请按会被替换来准备。要恢复时，用同一菜单的「从剪贴板导入」导回保存的内容，再在主页面停止并重新启动一次服务。
 
 导入与补强步骤：
 1. 打开 `v2rayNG` → 路由设置 → 右上角「从 QRcode 导入规则集」扫描 `android-v2rayng-claude-routing-qr.png`（或复制 `android-v2rayng-claude-routing.json` 选择「从剪贴板导入」）；
@@ -43,11 +67,11 @@ v2rayNG 是使用 Android VPN 接口的客户端之一。优先沿用自己已�
 5. **需要网页登录的 Wi-Fi**（酒店、商场、机场等）：开启「阻止不使用 VPN 的连接」后，弹出的认证页面可能打不开，Wi-Fi 一直显示「无法上网」。处理方法：先临时关闭该开关，完成网页认证后，再连上 VPN 并把开关打开。
 6. **应用分身 / 双开空间**：vivo「应用分身」、小米「应用双开」等分身里的 App 一般也走同一个 VPN（可在系统 VPN 详情或 `v2rayNG` 分应用设置里核对），但分身和主应用共用同一台手机的物理网卡、SIM 卡和系统时区。所以用分身装 Claude **不算一个独立环境**，本节下方的架构边界同样适用。
 
-> **重要架构边界（Android vs iOS）**：根据随包研究资料（`research-reports/.../sources/01-三端源码级遥测审计-B1anYu/android.md` 与 `02-Web与Android及Persona-KYC动态审计-ImNotDragon`），Android 原生客户端可在应用层直接读取不可重置的 `ANDROID_ID`、通过 `NetworkInterface` 枚举物理网卡上的公网 IPv6 地址（即使 VPN 已连接），以及读取 SIM 卡 MCC/MNC 与 Play Integrity 状态。**任何 VPN 或代理客户端都只能控制网络层路由与 DNS，无法拦截应用层本地系统 API 读取。** 因此，高敏感账户操作仍建议固定在电脑端隔离浏览器环境中进行，不要依赖 Android 原生客户端。
+> **重要架构边界（Android vs iOS）**：根据公开社区研究（`B1anYu/claude-telemetry-audit` 与 `benbaobaoshigemi/ImNotDragon`，公开链接见 [THIRD-PARTY-NOTICES.md](../THIRD-PARTY-NOTICES.md)），Android 原生客户端可在应用层直接读取不可重置的 `ANDROID_ID`、通过 `NetworkInterface` 枚举物理网卡上的公网 IPv6 地址（即使 VPN 已连接），以及读取 SIM 卡 MCC/MNC 与 Play Integrity 状态。**任何 VPN 或代理客户端都只能控制网络层路由与 DNS，无法拦截应用层本地系统 API 读取。** 因此，高敏感账户操作仍建议固定在电脑端隔离浏览器环境中进行，不要依赖 Android 原生客户端。
 
 ## iPhone 和 iPad
 
-`shadowrocket-local-proxy.conf` 是修复了原生 IPv6 绕过问题的通用分流模板：
+`shadowrocket-local-proxy.conf` 是修复了原生 IPv6 绕过问题的全代理模板：只有本地地址直连，公网 IPv6 地址在隧道内拒绝，其余都走 `FINAL,PROXY`。它没有国内直连分流，不含 30 项生态条目，也没有 UDP/443 阻断（这些条目因为 `FINAL,PROXY` 同样走代理）。
 - 在 `[General]` 中启用 **`ipv6 = true`** 与 **`hijack-dns = *:53`**，强制虚拟网卡（`utun`）接管手机 4G/5G 蜂窝网络与双栈 Wi-Fi 的 IPv6 路由及 53 端口明文 DNS，防止 iOS 因 `ipv6 = false` 将原生 IPv6 流量直接从物理网卡裸连发出。
 - 将回环、`.local` 及私有/链路本地 IPv4 与 IPv6 网段设为直连，在 `FINAL,PROXY` 之前通过 `IP-CIDR6,::/0,REJECT,no-resolve` 在隧道内阻断直接公网 IPv6 连接（域名访问仍经 `FINAL,PROXY` 转发，兼容仅支持 IPv4 出站的节点；若节点已验证支持 IPv6 出站，可按需改为 `PROXY`）。
 
@@ -63,7 +87,7 @@ v2rayNG 是使用 Android VPN 接口的客户端之一。优先沿用自己已�
 python3 mobile/validate_shadowrocket.py mobile/shadowrocket-local-proxy.conf
 ```
 
-校验要求开启 `ipv6 = true` 与 `hijack-dns = *:53`（拒绝会导致原生 IPv6 绕过隧道的 `ipv6 = false`），核对全部 11 条本地 IPv4/IPv6 直连例外、公网 IPv6 兜底处置以及末条 `FINAL,PROXY` 规则。
+校验要求开启 `ipv6 = true` 与 `hijack-dns = *:53`（拒绝会导致原生 IPv6 绕过隧道的 `ipv6 = false`），核对全部 11 条本地直连例外（2 条域名、9 条 IPv4/IPv6 网段）、公网 IPv6 兜底处置以及末条 `FINAL,PROXY` 规则。它只认随包模板的写法：`[General]` 里只接受这两行，加了 `dns-server` 之类的其他设置会报 `unsupported [General] setting`；加密 DNS 不在校验范围内，要在 App 里另行确认。
 
 ## 实机记录表
 

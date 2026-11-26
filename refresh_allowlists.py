@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 from uuid import uuid4
 
 from build_routing import LOCAL_NETWORKS
-from config_snapshot import SnapshotError, check_ancestors, checked_stat, hash_regular_file, local_path
+from config_snapshot import SnapshotError, checked_stat, hash_regular_file, local_path
 
 
 UPSTREAM_HOST = "raw.githubusercontent.com"
@@ -35,6 +35,20 @@ VERSIONED_PREVIEW = re.compile(r"routing-\d{8}T\d{12}Z-[0-9a-f]{8}\.json")
 DIRECT = "direct"
 PROXY = "proxy"
 FAKE_NETWORKS = [ipaddress.ip_network(value) for value in ("198.18.0.0/15", "fc00::/18")]
+# A broad upstream prefix such as 192.0.0.0/8 counts as global as a whole while
+# still containing private space, so domestic CIDRs are checked for overlap with
+# these special-purpose ranges rather than for containment only.
+NON_PUBLIC_NETWORKS = FAKE_NETWORKS + [
+    ipaddress.ip_network(value)
+    for value in (
+        *LOCAL_NETWORKS,
+        "0.0.0.0/8", "192.0.0.0/24", "192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24",
+        "224.0.0.0/4", "240.0.0.0/4",
+        "::/128", "::ffff:0:0/96", "100::/64", "2001:db8::/32", "fc00::/7", "ff00::/8",
+    )
+]
+# No version number here, so the header cannot drift from the release version.
+USER_AGENT = "cross-platform-privacy-environment-kit"
 
 
 class _StrictHttpsRedirectHandler(HTTPRedirectHandler):
@@ -52,7 +66,7 @@ def _https_urlopen(url, timeout=20):
     context = ssl.create_default_context()
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     opener = build_opener(HTTPSHandler(context=context), _StrictHttpsRedirectHandler())
-    request = Request(url, headers={"User-Agent": "cross-platform-privacy-environment-kit/0.3.4"})
+    request = Request(url, headers={"User-Agent": USER_AGENT})
     return opener.open(request, timeout=timeout)
 
 
@@ -140,10 +154,10 @@ def cidr_entries(data):
         except ValueError:
             raise ValueError(f"cncidr.txt: invalid CIDR at line {index}") from None
         minimum_prefix = 8 if address.version == 4 else 16
-        overlaps_fake = any(address.overlaps(pool) for pool in FAKE_NETWORKS)
+        overlaps_non_public = any(address.overlaps(pool) for pool in NON_PUBLIC_NETWORKS)
         if (
             "/" not in value or address.prefixlen < minimum_prefix
-            or not address.is_global or address.is_multicast or overlaps_fake
+            or not address.is_global or address.is_multicast or overlaps_non_public
         ):
             raise ValueError(f"cncidr.txt: unexpected non-public prefix at line {index}")
         compiled.append(str(address))
@@ -229,8 +243,8 @@ def main(argv=None):
             print("A recent preview already exists. No files were changed.")
             return 0
         if args.from_directory is None:
-            raw_domains = read_payload("direct.txt", None, commit=args.commit) if args.commit else read_payload("direct.txt", None)
-            raw_networks = read_payload("cncidr.txt", None, commit=args.commit) if args.commit else read_payload("cncidr.txt", None)
+            raw_domains = read_payload("direct.txt", None, commit=args.commit)
+            raw_networks = read_payload("cncidr.txt", None, commit=args.commit)
         else:
             raw_domains = read_payload("direct.txt", args.from_directory)
             raw_networks = read_payload("cncidr.txt", args.from_directory)

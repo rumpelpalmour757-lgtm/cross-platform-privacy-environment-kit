@@ -241,7 +241,7 @@ class ClientBoundaryAuditTests(unittest.TestCase):
         bridges = report["localMcpBridges"]
         self.assertEqual(bridges["claudeCliMcpServerCount"], 0)
         self.assertEqual(bridges["claudeCliMcpUnreadableConfigCount"], 2)
-        self.assertEqual(report["cliSettingsReadState"], "unreadable")
+        self.assertEqual(report["cliSettingsReadState"], "not_regular_file")
         self.assertFalse(any(report["cliAntiTelemetryFlags"].values()))
 
     def test_settings_read_state_distinguishes_absent_and_read(self):
@@ -254,6 +254,70 @@ class ClientBoundaryAuditTests(unittest.TestCase):
         self.assertEqual(report["cliSettingsReadState"], "read")
         self.assertEqual(report["localMcpBridges"]["claudeCliMcpUnreadableConfigCount"], 0)
         self.assertFalse(any("could not be read" in note for note in report["boundaryNotes"]))
+
+    def test_settings_read_state_names_why_the_file_was_not_read(self):
+        def oversized(settings):
+            settings.write_text("{}", encoding="utf-8")
+            return patch.object(boundary, "MAX_JSON_BYTES", 1)
+
+        def not_json(settings):
+            settings.write_text('{"env": {"DISABLE_TELEMETRY": "1"},}', encoding="utf-8")
+            return contextlib.nullcontext()
+
+        def utf16(settings):
+            settings.write_bytes('{"env": {}}'.encode("utf-16"))
+            return contextlib.nullcontext()
+
+        def directory(settings):
+            settings.mkdir()
+            return contextlib.nullcontext()
+
+        def denied(settings):
+            settings.write_text("{}", encoding="utf-8")
+            return patch.object(Path, "read_text", side_effect=PermissionError(13, "Permission denied"))
+
+        cases = (
+            ("too_large", oversized), ("invalid_json", not_json), ("invalid_json", utf16),
+            ("not_regular_file", directory), ("unreadable", denied),
+        )
+        for expected, prepare in cases:
+            with self.subTest(expected), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".claude").mkdir()
+                with prepare(root / ".claude" / "settings.json"):
+                    report = self._audit(root)
+                self.assertEqual(report["cliSettingsReadState"], expected)
+                self.assertEqual(report["localMcpBridges"]["claudeCliMcpUnreadableConfigCount"], 1)
+
+    def test_switches_that_cannot_be_settled_are_listed_as_undetermined(self):
+        cases = {
+            "environment off, settings on": ({"DISABLE_TELEMETRY": "0"}, {"DISABLE_TELEMETRY": "1"}, True),
+            "environment on, settings off": ({"DISABLE_TELEMETRY": "true"}, {"DISABLE_TELEMETRY": False}, True),
+            "unrecognized value": ({"DISABLE_TELEMETRY": "on"}, {}, True),
+            "unrecognized settings value": ({}, {"DISABLE_TELEMETRY": "enabled"}, True),
+            "both on": ({"DISABLE_TELEMETRY": "1"}, {"DISABLE_TELEMETRY": "yes"}, False),
+            "environment only": ({"DISABLE_TELEMETRY": "1"}, {}, False),
+            "settings only": ({}, {"DISABLE_TELEMETRY": True}, False),
+            "plain off": ({"DISABLE_TELEMETRY": "0"}, {}, False),
+            "empty environment value": ({"DISABLE_TELEMETRY": ""}, {"DISABLE_TELEMETRY": "1"}, False),
+        }
+        for name, (process_env, settings_env, undetermined) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / ".claude").mkdir()
+                (root / ".claude" / "settings.json").write_text(json.dumps({"env": settings_env}), encoding="utf-8")
+                report = self._audit(root, env=process_env)
+                self.assertEqual("DISABLE_TELEMETRY" in report["cliAntiTelemetryUndetermined"], undetermined)
+                self.assertNotIn("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", report["cliAntiTelemetryUndetermined"])
+        with tempfile.TemporaryDirectory() as tmp:
+            # The existing field keeps its meaning: the process environment is read first.
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_text(
+                json.dumps({"env": {"DISABLE_TELEMETRY": "1"}}), encoding="utf-8",
+            )
+            report = self._audit(root, env={"DISABLE_TELEMETRY": "0"})
+        self.assertFalse(report["cliAntiTelemetryFlags"]["DISABLE_TELEMETRY_enabled"])
 
     def test_relocated_config_dir_state_file_is_counted(self):
         with tempfile.TemporaryDirectory() as tmp:

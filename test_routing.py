@@ -36,9 +36,8 @@ class RoutingTests(unittest.TestCase):
 
     def test_bundled_template_validates(self):
         template_path = ROOT / "routing-template.json"
-        if template_path.is_file():
-            with contextlib.redirect_stdout(StringIO()):
-                self.assertEqual(main(["validate", str(template_path)]), 0)
+        with contextlib.redirect_stdout(StringIO()):
+            self.assertEqual(main(["validate", str(template_path)]), 0)
 
     def test_optional_external_rule_precedes_domestic(self):
         rules = build_rules(external_first_xray=True)
@@ -96,16 +95,18 @@ class RoutingTests(unittest.TestCase):
     def test_bundled_claude_presets_and_doh_output(self):
         split_preset = ROOT / "routing-claude-ecosystem.json"
         global_preset = ROOT / "routing-claude-global.json"
-        if split_preset.is_file():
-            with contextlib.redirect_stdout(StringIO()):
-                self.assertEqual(main(["validate", str(split_preset), "--claude-ecosystem"]), 0)
-        if global_preset.is_file():
-            with contextlib.redirect_stdout(StringIO()):
-                self.assertEqual(main(["validate", str(global_preset), "--global-proxy", "--claude-ecosystem"]), 0)
+        with contextlib.redirect_stdout(StringIO()):
+            self.assertEqual(main(["validate", str(split_preset), "--claude-ecosystem"]), 0)
+        with contextlib.redirect_stdout(StringIO()):
+            self.assertEqual(main(["validate", str(global_preset), "--global-proxy", "--claude-ecosystem"]), 0)
         buf = StringIO()
         with contextlib.redirect_stdout(buf):
             self.assertEqual(main(["print-doh-domains"]), 0)
         lines = [line.strip() for line in buf.getvalue().splitlines() if line.strip()]
+        self.assertEqual(lines, CLAUDE_ECOSYSTEM_DOMAINS)
+
+    def test_bundled_doh_domain_file_matches_ecosystem_list(self):
+        lines = (ROOT / "claude-doh-domains.txt").read_text(encoding="utf-8").splitlines()
         self.assertEqual(lines, CLAUDE_ECOSYSTEM_DOMAINS)
 
     def test_cli_help_reports_current_domain_count(self):
