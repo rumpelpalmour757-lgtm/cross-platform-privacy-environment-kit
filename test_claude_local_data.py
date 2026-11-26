@@ -374,7 +374,10 @@ class ClaudeLocalDataTests(unittest.TestCase):
         with redirect_stderr(StringIO()) as errors:
             self.assertEqual(data.main(["verify", str(snapshot)]), 1)
         self.assertIn("Invalid backup manifest", errors.getvalue())
-        with redirect_stderr(StringIO()) as errors, redirect_stdout(StringIO()):
+        # Path.expanduser("~unknown-user") raises RuntimeError on POSIX only; make the
+        # failure explicit so Windows exercises the same branch.
+        with redirect_stderr(StringIO()) as errors, redirect_stdout(StringIO()), \
+                patch.object(data, "selected_config_path", side_effect=RuntimeError("no home")):
             self.assertEqual(data.main(["audit", "--config-dir", "~no-such-user-fixture/x"]), 1)
         self.assertEqual(errors.getvalue(), "Claude work operation stopped (RuntimeError).\n")
         real_stat = data.checked_stat

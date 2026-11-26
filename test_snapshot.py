@@ -103,7 +103,10 @@ class ConfigSnapshotTests(unittest.TestCase):
         (path / snapshots.MANIFEST_NAME).write_text("[" * 200000 + "]" * 200000, encoding="utf-8")
         with self.assertRaisesRegex(snapshots.SnapshotError, "manifest is invalid"):
             snapshots.verify_snapshot(path)
-        with patch("sys.stderr", new_callable=StringIO) as errors:
+        # Path.expanduser("~unknown-user") raises RuntimeError on POSIX only; make the
+        # failure explicit so Windows exercises the same branch.
+        with patch("sys.stderr", new_callable=StringIO) as errors, \
+                patch.object(snapshots, "create_snapshot", side_effect=RuntimeError("no home")):
             self.assertEqual(snapshots.main(["backup", "--config-dir", "~no-such-user-fixture/x"]), 1)
         self.assertEqual(errors.getvalue(), "Snapshot operation stopped (RuntimeError).\n")
 

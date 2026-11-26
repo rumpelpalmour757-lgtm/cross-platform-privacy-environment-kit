@@ -534,9 +534,11 @@ class NewFileTests(SandboxTestCase):
                    "THIRD-PARTY-NOTICE.md"]
         kept = ["README.md", "docs/index.html", "kit.py", "test_kit.py", "mobile/rules.json",
                 "routing-template.json", "claude-doh-domains.txt", "Manage-WindowsKillSwitch.ps1"]
-        result = subprocess.run(["git", "check-ignore", "--no-index", "--stdin"], cwd=box.repo, env=box.env,
-                                input="\n".join(ignored + kept) + "\n", capture_output=True, text=True)
-        self.assertEqual(sorted(result.stdout.split()), sorted(ignored))
+        # NUL-separated like tools/auto_update.py: text-mode pipes on Windows turn "\n" into "\r\n".
+        result = subprocess.run(["git", "check-ignore", "--no-index", "-z", "--stdin"], cwd=box.repo, env=box.env,
+                                input="\0".join(ignored + kept) + "\0", capture_output=True, text=True,
+                                encoding="utf-8")
+        self.assertEqual(sorted(name for name in result.stdout.split("\0") if name), sorted(ignored))
 
 
 class PushTests(SandboxTestCase):
