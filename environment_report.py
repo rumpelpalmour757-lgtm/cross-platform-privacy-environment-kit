@@ -11,6 +11,7 @@ import platform
 import stat
 import subprocess
 import sys
+import tempfile
 
 import audit_client_boundary
 from config_snapshot import SnapshotError, checked_stat
@@ -45,6 +46,7 @@ CHECK_LABELS_ZH = {
 }
 
 IPV6_DEFAULT_PREFIXES = {"::/0", "::/1", "8000::/1"}
+MAX_REPORT_JSON_BYTES = 16 * 1024 * 1024
 
 
 def _decode_json_bytes(raw):
@@ -98,7 +100,7 @@ def capture_json(command):
     return {"status": "collected", "data": data}
 
 
-def _collect_client_boundary(system, config_dir=None):
+def _collect_client_boundary(system, config_dir=None, project_dir=None):
     boundary_script = ROOT / "audit_client_boundary.py"
     if not _ensure_unlinked_script(boundary_script):
         return {"status": "unavailable", "reason": "collector-script-invalid"}
@@ -106,6 +108,7 @@ def _collect_client_boundary(system, config_dir=None):
         data = audit_client_boundary.collect_boundary_audit(
             system=system,
             config_dir=config_dir,
+            project_dir=project_dir,
         )
     except Exception:
         return {"status": "unavailable", "reason": "boundary-audit-error"}
@@ -123,6 +126,12 @@ def _make_check(check_id, category, title, status, evidence_tier, detail):
         "evidenceTier": evidence_tier,
         "detail": detail,
     }
+
+
+def _as_count(value):
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return 0
+    return value
 
 
 def _has_observed_network_subsystem(network_data):
@@ -159,6 +168,49 @@ def _unix_route_interface_types(route_obj):
     if not isinstance(mapping, dict):
         return set()
     return {key for key, count in mapping.items() if count}
+
+
+def _unix_route_surface(route_obj):
+    """Return (has_tunnel, has_non_tunnel) for the forwarding candidates of one route summary."""
+    if not isinstance(route_obj, dict) or route_obj.get("status") != "observed":
+        return False, False
+    types = _unix_route_interface_types(route_obj)
+    active = _as_count(route_obj.get("forwarding_candidate_count")) > 0
+    return "tunnel_candidate" in types, bool(types - {"tunnel_candidate"}) or (active and not types)
+
+
+def _unix_ipv6_surface(platform_key, ipv6, split_v6):
+    """Classify IPv6 default-route exposure as ("clear" | "gap" | "unknown", detail)."""
+    if not isinstance(ipv6, dict) or ipv6.get("status") != "observed":
+        if isinstance(ipv6, dict) and ipv6.get("reason") == "address_family_unsupported":
+            return "clear", "the running kernel has no IPv6 support"
+        return "unknown", (
+            "Tunnel interface candidate observed in local IPv4 routes, but the local IPv6 route table "
+            "could not be observed; IPv6 exposure was not verified."
+        )
+    default_tunnel, default_other = _unix_route_surface(ipv6)
+    split_tunnel, split_other = _unix_route_surface(split_v6)
+    if not (default_tunnel or default_other or split_tunnel or split_other):
+        return "clear", "no forwarding IPv6 default or split-default route candidate observed"
+    if not (default_tunnel or split_tunnel):
+        return "gap", "Active non-tunnel IPv6 default route candidate observed; confirm IPv6 is tunnelled or blocked."
+    if not (default_other or split_other):
+        return "clear", "IPv6 default/split-default route candidates use tunnel interface candidates only"
+    if platform_key == "macos":
+        # One routing table once interface-scoped rows are excluded: more-specific split routes win.
+        if split_tunnel and not split_other:
+            return "clear", (
+                "more-specific IPv6 split-default routes use tunnel interface candidates over a "
+                "non-tunnel IPv6 default route (split coverage not verified)"
+            )
+        return "gap", (
+            "Non-tunnel IPv6 default route candidate observed alongside a tunnel candidate; "
+            "confirm IPv6 is tunnelled or blocked."
+        )
+    return "unknown", (
+        "Both tunnel and non-tunnel IPv6 default/split-default route candidates were observed; "
+        "which one takes precedence (policy routing, metrics) was not tested."
+    )
 
 
 def _evaluate_routing_check(network_data):
@@ -204,7 +256,8 @@ def _evaluate_routing_check(network_data):
                 "gap",
                 "observed_local",
                 f"Observed {len(active_v6)} active IPv6 default/split-default route candidate(s); "
-                "confirm IPv6 is tunnelled or blocked to prevent dual-stack bypass or 502 errors.",
+                "confirm IPv6 is tunnelled or blocked to prevent dual-stack bypass or 502 errors. "
+                "Interface types are not collected on Windows, so a tunnelled IPv6 route is listed here as well.",
             )
         if active_v4:
             return _make_check(
@@ -214,7 +267,9 @@ def _evaluate_routing_check(network_data):
                 "pass",
                 "observed_local",
                 f"Observed {len(active_v4)} active IPv4 default/split-default route candidate(s) and 0 active "
-                "IPv6 default route candidates; live proxy exit still requires Test-ProxyState.ps1.",
+                "IPv6 default route candidates. This only shows that no IPv6 default route is active; interface "
+                "types are not collected on Windows, so whether IPv4 uses a tunnel was not determined. "
+                "Live proxy exit still requires Test-ProxyState.ps1.",
             )
         return _make_check(
             "routing_and_ipv6_surface",
@@ -243,41 +298,48 @@ def _evaluate_routing_check(network_data):
         split_v4 = split_routes.get("ipv4") if isinstance(split_routes, dict) else None
         if isinstance(split_v4, dict):
             v4_types.update(_unix_route_interface_types(split_v4))
-        v6_types = set()
-        v6_active = False
-        if isinstance(ipv6, dict) and ipv6.get("status") == "observed":
-            v6_active = (ipv6.get("forwarding_candidate_count") or 0) > 0
-            v6_types.update(_unix_route_interface_types(ipv6))
         split_v6 = split_routes.get("ipv6") if isinstance(split_routes, dict) else None
-        if isinstance(split_v6, dict):
-            if split_v6.get("status") == "observed" and (split_v6.get("forwarding_candidate_count") or 0) > 0:
-                v6_active = True
-            v6_types.update(_unix_route_interface_types(split_v6))
-        if v6_active and "tunnel_candidate" not in v6_types:
+        v6_state, v6_detail = _unix_ipv6_surface(network_data.get("platform"), ipv6, split_v6)
+        scoped = _as_count(ipv6.get("interface_scoped_route_count")) if isinstance(ipv6, dict) else 0
+        scoped_note = (
+            f" {scoped} interface-scoped IPv6 default route row(s) were not counted as forwarding candidates."
+            if scoped else ""
+        )
+        if v6_state == "gap":
             return _make_check(
                 "routing_and_ipv6_surface",
                 "network",
                 "Default route and IPv6 surface",
                 "gap",
                 "observed_local",
-                "Active non-tunnel IPv6 default route candidate observed; confirm IPv6 is tunnelled or blocked.",
+                v6_detail + scoped_note,
             )
-        if "tunnel_candidate" in v4_types:
+        if "tunnel_candidate" not in v4_types:
             return _make_check(
                 "routing_and_ipv6_surface",
                 "network",
                 "Default route and IPv6 surface",
-                "pass",
+                "gap",
                 "observed_local",
-                "Tunnel interface candidate observed in local IPv4 routes; policy-routing precedence is not tested.",
+                "No tunnel interface candidate observed in local IPv4 default or split-tunnel routes.",
+            )
+        if v6_state == "unknown":
+            return _make_check(
+                "routing_and_ipv6_surface",
+                "network",
+                "Default route and IPv6 surface",
+                "unknown",
+                "observed_local",
+                v6_detail + scoped_note,
             )
         return _make_check(
             "routing_and_ipv6_surface",
             "network",
             "Default route and IPv6 surface",
-            "gap",
+            "pass",
             "observed_local",
-            "No tunnel interface candidate observed in local IPv4 default or split-tunnel routes.",
+            f"Tunnel interface candidate observed in local IPv4 routes; {v6_detail}; "
+            f"policy-routing precedence is not tested.{scoped_note}",
         )
 
     return _make_check(
@@ -312,19 +374,35 @@ def _evaluate_dns_check(network_data):
                 "Windows adapter DNS resolvers could not be observed.",
             )
         interfaces = [row for row in (dns.get("Interfaces") or []) if isinstance(row, dict)]
-        strict_doh = any(
-            (row.get("AutoUpgradeCount") or 0) > 0 and (row.get("AutoUpgradeWithFallback") or 0) == 0
-            for row in interfaces
-        )
-        if strict_doh:
+        # Rows that report zero resolvers have nothing to upgrade; a row without a usable
+        # ResolverCount cannot be confirmed and counts as not strict.
+        rows = [row for row in interfaces if row.get("ResolverCount") != 0]
+        strict_rows = [
+            row for row in rows
+            if _as_count(row.get("ResolverCount")) > 0
+            and _as_count(row.get("AutoUpgradeCount")) == _as_count(row.get("ResolverCount"))
+            and _as_count(row.get("AutoUpgradeWithFallback")) == 0
+        ]
+        if rows and len(strict_rows) == len(rows):
             return _make_check(
                 "system_dns_observations",
                 "network",
                 "System DNS and encrypted transport",
                 "pass",
                 "observed_local",
-                "At least one adapter registers OS-level DoH auto-upgrade without UDP fallback; "
-                "browser and app private DNS traffic remain unobserved.",
+                f"All {len(rows)} adapter resolver row(s) register OS-level DoH auto-upgrade without UDP "
+                "fallback for every configured resolver; browser and app private DNS traffic remain unobserved.",
+            )
+        if rows:
+            return _make_check(
+                "system_dns_observations",
+                "network",
+                "System DNS and encrypted transport",
+                "unknown",
+                "observed_local",
+                f"{len(rows) - len(strict_rows)} of {len(rows)} adapter resolver row(s) have resolvers without "
+                "strict OS-level DoH auto-upgrade; live proxy DoH, LAN port-53 guard status, and browser DNS "
+                "traffic are not verified statically.",
             )
         return _make_check(
             "system_dns_observations",
@@ -433,6 +511,8 @@ def _evaluate_firewall_check(platform_name, network_data):
             f"DefaultOutboundAction is not Block on {', '.join(allow_profiles)} "
             "(normal for split mode; enable Manage-WindowsKillSwitch.ps1 for strict fail-closed blocking).",
         )
+    # Collect-WindowsEvidence.ps1 always records FailClosedVerified=false, so a live collection
+    # never reaches this branch; it only applies to a saved report that sets the field itself.
     if network_data.get("FailClosedVerified") is True:
         return _make_check(
             "firewall_and_fail_closed",
@@ -580,6 +660,18 @@ def build_tri_state_summary(report):
                     "static_config",
                     "All 5 CLI anti-telemetry and non-essential traffic switches are enabled.",
                 ))
+            elif boundary_data.get("cliSettingsReadState") == "unreadable":
+                not_enabled = ", ".join(disabled_flags) if disabled_flags else "unverified"
+                checks.append(_make_check(
+                    "cli_anti_telemetry_switches",
+                    "client_boundary",
+                    "Claude CLI 5 anti-telemetry switches",
+                    "unknown",
+                    "static_config",
+                    "Claude CLI settings.json exists but could not be read (symbolic link, oversized, or not "
+                    "valid JSON), so switches set there were not evaluated. Not enabled through the process "
+                    f"environment: {not_enabled}.",
+                ))
             else:
                 missing_list = ", ".join(disabled_flags) if disabled_flags else "unverified"
                 checks.append(_make_check(
@@ -604,6 +696,15 @@ def build_tri_state_summary(report):
         else:
             desktop_mcp = int(mcp.get("claudeDesktopMcpServerCount") or 0)
             cli_mcp = int(mcp.get("claudeCliMcpServerCount") or 0)
+            unreadable = (
+                _as_count(mcp.get("claudeDesktopMcpUnreadableConfigCount"))
+                + _as_count(mcp.get("claudeCliMcpUnreadableConfigCount"))
+            )
+            unreadable_note = (
+                f" {unreadable} config file(s) could not be read (symbolic link, oversized, or not valid JSON), "
+                "so the count may be incomplete."
+                if unreadable else ""
+            )
             if desktop_mcp + cli_mcp > 0:
                 checks.append(_make_check(
                     "local_mcp_host_bridges",
@@ -612,29 +713,57 @@ def build_tri_state_summary(report):
                     "gap",
                     "static_config",
                     f"Detected local MCP server config(s) (Desktop={desktop_mcp}, CLI={cli_mcp}). "
-                    "Audit enabled bridges so host clock, timezone, or local filesystem metadata do not cross boundaries.",
+                    "Audit enabled bridges so host clock, timezone, or local filesystem metadata do not cross boundaries."
+                    + unreadable_note,
+                ))
+            elif unreadable:
+                checks.append(_make_check(
+                    "local_mcp_host_bridges",
+                    "client_boundary",
+                    "Local MCP / host-tool bridges",
+                    "unknown",
+                    "static_config",
+                    "No MCP server entries were counted, but the local MCP configuration was not fully read."
+                    + unreadable_note,
                 ))
             else:
+                project_note = (
+                    "" if mcp.get("projectMcpConfigInspected") is True
+                    else " A project's .mcp.json is only inspected when --project-dir is given."
+                )
                 checks.append(_make_check(
                     "local_mcp_host_bridges",
                     "client_boundary",
                     "Local MCP / host-tool bridges",
                     "pass",
                     "static_config",
-                    "No local Claude Desktop or CLI MCP server bridges configured.",
+                    "No local Claude Desktop or CLI MCP server bridges configured." + project_note,
                 ))
 
     if local_payload is not None:
         file_count = int(local_payload.get("files") or 0)
         byte_count = int(local_payload.get("bytes") or 0)
-        checks.append(_make_check(
-            "claude_local_data_audit",
-            "local_data",
-            "Redacted local Claude data inventory",
-            "pass",
-            "static_config",
-            f"Inventory collected ({file_count} file(s), {byte_count} bytes); file contents were not read.",
-        ))
+        skipped = _as_count(local_payload.get("unsafe_or_unavailable"))
+        if skipped:
+            checks.append(_make_check(
+                "claude_local_data_audit",
+                "local_data",
+                "Redacted local Claude data inventory",
+                "unknown",
+                "static_config",
+                f"Inventory incomplete: {skipped} location(s) could not be inspected (symbolic link, special "
+                f"file, or unreadable); {file_count} file(s), {byte_count} bytes listed. If the configuration "
+                "directory is reached through a symbolic link, pass its resolved path with --config-dir.",
+            ))
+        else:
+            checks.append(_make_check(
+                "claude_local_data_audit",
+                "local_data",
+                "Redacted local Claude data inventory",
+                "pass",
+                "static_config",
+                f"Inventory collected ({file_count} file(s), {byte_count} bytes); file contents were not read.",
+            ))
     else:
         reason = local_data.get("reason") or local_data.get("status") or "missing"
         checks.append(_make_check(
@@ -733,7 +862,7 @@ def build_report(system, config_dir=None, project_dir=None, evidence_directory=N
             local_data.extend(["--project-dir", str(project_dir)])
         report["claudeLocalData"] = capture_json(local_data)
 
-    report["clientBoundary"] = _collect_client_boundary(system, config_dir=config_dir)
+    report["clientBoundary"] = _collect_client_boundary(system, config_dir=config_dir, project_dir=project_dir)
     report["summary"] = build_tri_state_summary(report)
     return report
 
@@ -782,6 +911,8 @@ def render_html_report(report):
             f"<span class=\"pill {cls}\">{_escape(short_key)}: {state_txt}</span>"
         )
     flags_html = " ".join(flag_chips) if flag_chips else "<span class=\"muted\">未采集</span>"
+    if boundary.get("cliSettingsReadState") == "unreadable":
+        flags_html += "<div class=\"muted\">settings.json 未能读取，以上仅反映进程环境变量。</div>"
 
     notes_html = "".join(f"<li>{_escape(note)}</li>" for note in notes) or "<li>无额外提示。</li>"
     pretty_json = _escape(json.dumps(report, indent=2, ensure_ascii=False))
@@ -799,6 +930,12 @@ def render_html_report(report):
         f"CLI {int(mcp.get('claudeCliMcpServerCount') or 0)} 项"
         if mcp else "未采集"
     )
+    mcp_unreadable = (
+        _as_count(mcp.get("claudeDesktopMcpUnreadableConfigCount"))
+        + _as_count(mcp.get("claudeCliMcpUnreadableConfigCount"))
+    )
+    if mcp_unreadable:
+        mcp_summary += f"（另有 {mcp_unreadable} 个配置文件未能读取，数量可能不全）"
 
     return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -969,7 +1106,7 @@ def render_html_report(report):
         <h1>跨平台网络隐私与本机边界体检报告</h1>
         <div class="meta">
           平台：<strong>{platform_name}</strong> · 工具包版本：<strong>v{kit_ver}</strong> · 生成时间（UTC）：<strong>{generated_at}</strong><br>
-          范围说明：仅本机只读脱敏观测，不含账号凭据、节点链接、本机用户名路径或 MCP 命令参数。
+          范围说明：仅本机只读脱敏观测，不含账号凭据、节点链接、本机用户名路径或 MCP 命令参数；但包含宿主机时区、UTC 偏移与区域语言，转发或公开前请留意。
         </div>
       </div>
       <button type="button" class="print-btn" onclick="window.print()">打印 / 另存为 PDF</button>
@@ -1049,29 +1186,33 @@ def render_html_report(report):
 """
 
 
-def _write_text_safely(target_path, content):
+def _check_output_target(target_path):
     destination = Path(target_path)
     if os.path.islink(destination):
         raise ValueError(f"Refusing to write through symbolic link: {destination}")
     if destination.exists() and not destination.is_file():
         raise ValueError(f"Output path exists and is not a regular file: {destination}")
+    if os.path.islink(destination.parent):
+        raise ValueError(f"Refusing to write into symbolic link directory: {destination.parent}")
+    return destination
+
+
+def _write_text_safely(target_path, content):
+    destination = _check_output_target(target_path)
     parent = destination.parent
-    if os.path.islink(parent):
-        raise ValueError(f"Refusing to write into symbolic link directory: {parent}")
     parent.mkdir(parents=True, exist_ok=True)
-    temp_path = destination.with_name(f".{destination.name}.{os.getpid()}.part")
-    if os.path.islink(temp_path):
-        raise ValueError(f"Refusing to overwrite symbolic link temp file: {temp_path}")
+    # mkstemp creates an unpredictable, owner-only (0600) file; the report keeps that mode.
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".part", dir=parent)
     try:
-        with open(temp_path, "w", encoding="utf-8", newline="\n") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(content)
-        os.replace(temp_path, destination)
-    finally:
-        if temp_path.exists() and not os.path.islink(temp_path):
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
+        os.replace(temp_name, destination)
+    except BaseException:
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 
 def main(argv=None):
@@ -1089,24 +1230,47 @@ def main(argv=None):
         if not _ensure_unlinked_script(args.from_json):
             parser.error("--from-json must point to an unlinked regular JSON file")
         try:
+            if args.from_json.stat().st_size > MAX_REPORT_JSON_BYTES:
+                parser.error("--from-json is larger than a saved environment report can be")
             report = json.loads(args.from_json.read_text(encoding="utf-8-sig"))
-        except (OSError, UnicodeError, ValueError) as exc:
-            parser.error(f"Could not parse --from-json: {exc}")
+        except (OSError, UnicodeError, ValueError, RecursionError) as exc:
+            parser.error(f"Could not parse --from-json: {type(exc).__name__}: {exc}")
         if not isinstance(report, dict):
             parser.error("--from-json must contain a JSON object")
-        if "summary" not in report and report.get("status") != "unsupported-platform":
-            report["summary"] = build_tri_state_summary(report)
     else:
         system = platform.system()
         if args.evidence_directory is not None and system != "Windows":
             parser.error("--evidence-directory is only supported on Windows")
         report = build_report(system, args.config_dir, args.project_dir, args.evidence_directory)
 
-    serialized = json.dumps(report, indent=2, ensure_ascii=True)
-    if args.json_out is not None:
-        _write_text_safely(args.json_out, serialized + "\n")
-    if args.html_out is not None:
-        _write_text_safely(args.html_out, render_html_report(report))
+    # Build every output before touching the disk, so a bad saved report or a bad
+    # target path ends in one error line instead of a traceback or a half-written pair.
+    try:
+        if (
+            args.from_json is not None
+            and "summary" not in report
+            and report.get("status") != "unsupported-platform"
+        ):
+            report["summary"] = build_tri_state_summary(report)
+        serialized = json.dumps(report, indent=2, ensure_ascii=True)
+        outputs = []
+        if args.json_out is not None:
+            outputs.append((args.json_out, serialized + "\n"))
+        if args.html_out is not None:
+            rendered = render_html_report(report)
+            rendered.encode("utf-8")
+            outputs.append((args.html_out, rendered))
+    except (AttributeError, KeyError, TypeError, ValueError, RecursionError) as exc:
+        if args.from_json is None:
+            raise
+        parser.error(f"--from-json does not have the shape of an environment report ({type(exc).__name__})")
+    try:
+        for target, _ in outputs:
+            _check_output_target(target)
+        for target, content in outputs:
+            _write_text_safely(target, content)
+    except (OSError, ValueError) as exc:
+        parser.error(f"Could not write the report: {type(exc).__name__}: {exc}")
     if not args.quiet:
         print(serialized)
     if report.get("status") == "unsupported-platform":

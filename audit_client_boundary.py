@@ -9,8 +9,10 @@ import os
 from pathlib import Path
 import platform
 import stat
-import sys
 
+
+# Client state files grow with per-project history; read them up to this size.
+MAX_JSON_BYTES = 32 * 1024 * 1024
 
 CLI_ANTI_TELEMETRY_KEYS = (
     "DISABLE_TELEMETRY",
@@ -86,39 +88,52 @@ def _has_msix_claude(local_appdata):
         return False
 
 
-def _read_json_file_bounded(file_path, max_bytes=1024 * 1024):
+def _load_json_file(file_path):
+    """Return (data, state); state is "absent", "read", or "unreadable".
+
+    "unreadable" covers a file that exists but is a symbolic link or other
+    non-regular entry, is larger than the limit, or is not valid JSON, so that
+    callers can keep "nothing configured" apart from "could not be checked".
+    """
     try:
         info = os.lstat(file_path)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > max_bytes:
-            return None
+    except (FileNotFoundError, NotADirectoryError):
+        return None, "absent"
+    except (OSError, ValueError):
+        return None, "unreadable"
+    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_JSON_BYTES:
+        return None, "unreadable"
+    try:
         raw = Path(file_path).read_text(encoding="utf-8-sig")
-        return json.loads(raw)
-    except (OSError, UnicodeError, ValueError):
-        return None
+        return json.loads(raw), "read"
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return None, "unreadable"
 
 
-def _read_cli_settings_env(cli_dir):
-    data = _read_json_file_bounded(Path(cli_dir) / "settings.json")
+def _settings_env(data):
     if isinstance(data, dict) and isinstance(data.get("env"), dict):
         return {str(key): str(val) for key, val in data["env"].items() if val is not None}
     return {}
 
 
-def _count_mcp_servers(file_path):
-    data = _read_json_file_bounded(file_path)
-    if not isinstance(data, dict):
+def _mcp_entry_count(data):
+    servers = data.get("mcpServers") if isinstance(data, dict) else None
+    return len(servers) if isinstance(servers, dict) else 0
+
+
+def _project_scoped_mcp_count(data):
+    # The CLI state file keeps per-project entries under projects.<path>.mcpServers.
+    projects = data.get("projects") if isinstance(data, dict) else None
+    if not isinstance(projects, dict):
         return 0
-    servers = data.get("mcpServers")
-    if not isinstance(servers, dict):
-        return 0
-    return len(servers)
+    return sum(_mcp_entry_count(entry) for entry in projects.values())
 
 
 def _flag_enabled(value):
     return str(value or "").strip().lower() in ("1", "true", "yes")
 
 
-def collect_boundary_audit(system=None, home=None, env=None, now_local=None, config_dir=None):
+def collect_boundary_audit(system=None, home=None, env=None, now_local=None, config_dir=None, project_dir=None):
     sys_name = system or platform.system()
     env_map = os.environ if env is None else env
     home_dir = Path(home) if home is not None else Path.home()
@@ -131,8 +146,13 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
         cli_dir = Path(config_override)
     else:
         cli_dir = home_dir / ".claude"
-    cli_json = home_dir / ".claude.json"
-    settings_env = _read_cli_settings_env(cli_dir)
+    cli_state_files = [home_dir / ".claude.json"]
+    if cli_dir != home_dir / ".claude" and cli_dir / ".claude.json" not in cli_state_files:
+        # With a relocated configuration directory the state file may live inside it.
+        cli_state_files.append(cli_dir / ".claude.json")
+    cli_state_present = any(_safe_exists(path) for path in cli_state_files)
+    settings_data, settings_state = _load_json_file(cli_dir / "settings.json")
+    settings_env = _settings_env(settings_data)
 
     desktop_appdata_present = False
     desktop_msix_present = False
@@ -153,20 +173,30 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
         desktop_config_dir = base / "Claude"
         desktop_appdata_present = _safe_exists(desktop_config_dir)
 
-    desktop_mcp_count = (
-        _count_mcp_servers(desktop_config_dir / "claude_desktop_config.json")
-        if desktop_config_dir is not None
-        else 0
-    )
-    cli_mcp_count = (
-        _count_mcp_servers(cli_dir / "settings.json")
-        + _count_mcp_servers(cli_json)
-    )
+    desktop_mcp_count = 0
+    desktop_mcp_unreadable = 0
+    if desktop_config_dir is not None:
+        data, state = _load_json_file(desktop_config_dir / "claude_desktop_config.json")
+        desktop_mcp_count = _mcp_entry_count(data)
+        desktop_mcp_unreadable = int(state == "unreadable")
+    cli_mcp_count = _mcp_entry_count(settings_data)
+    cli_mcp_unreadable = int(settings_state == "unreadable")
+    for state_file in cli_state_files:
+        data, state = _load_json_file(state_file)
+        cli_mcp_count += _mcp_entry_count(data) + _project_scoped_mcp_count(data)
+        cli_mcp_unreadable += int(state == "unreadable")
+    if project_dir is not None:
+        data, state = _load_json_file(Path(project_dir) / ".mcp.json")
+        cli_mcp_count += _mcp_entry_count(data)
+        cli_mcp_unreadable += int(state == "unreadable")
     local_mcp_bridges = {
         "claudeDesktopMcpConfigured": desktop_mcp_count > 0,
         "claudeDesktopMcpServerCount": desktop_mcp_count,
+        "claudeDesktopMcpUnreadableConfigCount": desktop_mcp_unreadable,
         "claudeCliMcpConfigured": cli_mcp_count > 0,
         "claudeCliMcpServerCount": cli_mcp_count,
+        "claudeCliMcpUnreadableConfigCount": cli_mcp_unreadable,
+        "projectMcpConfigInspected": project_dir is not None,
     }
 
     env_flags = {
@@ -186,7 +216,7 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
     }
 
     desktop_present = desktop_appdata_present or desktop_msix_present
-    cli_present = _safe_exists(cli_dir) or _safe_exists(cli_json)
+    cli_present = _safe_exists(cli_dir) or cli_state_present
     warnings = []
     if desktop_present:
         warnings.append(
@@ -218,11 +248,21 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
             "context and may expose host clock, timezone, or local filesystem metadata into sessions; "
             "review enabled bridges when strict host isolation is required."
         )
+    unreadable_configs = desktop_mcp_unreadable + cli_mcp_unreadable
+    if unreadable_configs:
+        warnings.append(
+            f"{unreadable_configs} local client configuration file(s) exist but could not be read "
+            "(symbolic link, oversized, or not valid JSON); counts and switch states that depend on "
+            "those files are incomplete."
+        )
 
     return {
         "schemaVersion": 1,
         "platform": sys_name,
-        "scope": "Read-only redacted host boundary audit. Values, paths, usernames, and tokens are omitted.",
+        "scope": (
+            "Read-only redacted host boundary audit. Values, paths, usernames, and tokens are omitted; "
+            "host timezone name, UTC offset, and locale are included."
+        ),
         "hostEnvironment": {
             "timezoneName": _detect_timezone_name(sys_name, local_time),
             "utcOffsetHours": _utc_offset_hours(local_time),
@@ -230,12 +270,13 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
         },
         "localClientFootprints": {
             "claudeCliConfigDirPresent": _safe_exists(cli_dir),
-            "claudeCliStateFilePresent": _safe_exists(cli_json),
+            "claudeCliStateFilePresent": cli_state_present,
             "claudeDesktopDataPresent": desktop_appdata_present,
             "claudeDesktopMsixPresent": desktop_msix_present,
         },
         "environmentVariableFlags": env_flags,
         "cliAntiTelemetryFlags": cli_anti_telemetry,
+        "cliSettingsReadState": settings_state,
         "localMcpBridges": local_mcp_bridges,
         "boundaryNotes": warnings or [
             "No native Claude Desktop or CLI data footprints were observed in default host locations."
@@ -246,8 +287,9 @@ def collect_boundary_audit(system=None, home=None, env=None, now_local=None, con
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config-dir", type=Path, help="Override the Claude CLI configuration directory.")
+    parser.add_argument("--project-dir", type=Path, help="Also count MCP entries in this project's .mcp.json.")
     args = parser.parse_args(argv)
-    result = collect_boundary_audit(config_dir=args.config_dir)
+    result = collect_boundary_audit(config_dir=args.config_dir, project_dir=args.project_dir)
     print(json.dumps(result, indent=2, ensure_ascii=True))
     return 0
 
