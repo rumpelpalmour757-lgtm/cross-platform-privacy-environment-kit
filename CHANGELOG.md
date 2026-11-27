@@ -1,5 +1,43 @@
 # 版本记录
 
+## 未发布：Windows 脚本修复（还没有在 Windows 真机上跑过）
+
+> 这一节的 `.ps1` 改动只在 CI 的 windows-latest 上做过语法解析、`Preview` 对账和几个纯函数的单测，`Install`、`Remove`、`Status` 和断线演练没有在 Windows 上运行过。要等在真机上照 `WINDOWS-KILL-SWITCH.md` 跑过 `Preview`、`Install`、`Status`、断线演练、`Remove` 以后再发版。
+
+### 断网开关和 LAN DNS Guard（`Manage-WindowsKillSwitch.ps1`、`Manage-WindowsLanDnsGuard.ps1`）
+
+- **目录权限检查改对了掩码**：v0.4.2 的掩码把 `Write`、`Modify`、`FullControl` 等或在一起，结果等于 `FullControl`，共享用户组有只读权限也被拒，工具包放在 `C:\Program Files` 下时 `Install`、`Remove` 都跑不了。现在只看改动类权限（写入、追加、写属性、删除、删除子项、改权限、取得所有权，以及通用的 `GENERIC_WRITE`、`GENERIC_ALL`），只读和执行放行，只作用于子项的继承项不算；共享用户组加上 INTERACTIVE；按 SID 读权限，不再逐条翻译账户名。报错写出是哪个路径、哪个用户组、什么权限。两个脚本里这段函数逐字相同，测试会比对。
+- **`Remove` 不再被位置检查拦住**：目录权限、重解析点、非 NTFS 卷这几项，`Remove` 只打印 `WARNING:` 后继续删规则；日志目录不可用时 `Remove` 不写日志继续。`Install` 照旧拒绝，FAT32、exFAT 这类没有权限的卷上现在也拒绝（以前直接放行）。重解析点的报错写出是哪一级目录。
+- **断网开关 `Remove` 不再在同组还剩规则时报 `removed`**：删完以后同组或同名里还有不是脚本原样建的规则时，输出 `removed-other-rules-remain`、列出 `RemainingRules`、退出码 2；这些规则不替你删，`WINDOWS-KILL-SWITCH.md` 写了怎样查和手工删。
+- **LAN DNS Guard `Install` 不再先删旧规则**：只在还没有本工具包的 LAN DNS Guard 规则时才建规则，先建成禁用状态、读回核对、再一起启用，中途失败先删掉这次建的规则再报错；已经装过、参数一样时输出 `already-installed`，参数不同时拒绝并提示先 `Remove`。导出 `.wfw` 只在真要建规则时做，备份和日志的文件名加了随机串，同一秒运行两次不再撞名。失败时日志里也写一行。
+- **LAN DNS Guard `Remove` 不再整体拒绝**：同组里有对不上的规则时，照常删掉自己的规则，列出剩下的，退出码 2（以前报 `Refusing to remove unmanaged firewall rules…`，自己的规则也不删）。`Install` 遇到这种规则仍然拒绝，现在会列出名字。
+- LAN DNS Guard 和断网开关对齐：加全局互斥锁；检查防火墙配置文件的 `DisabledInterfaceAliases`；`Status` 带了网卡参数、规则对不上时退出码 2（以前总是 0），输出加 `ForeignOrUnexpectedRules`；`-LogDirectory` 要求绝对路径。
+- 网卡名的规则和 Python 规划器对齐：拒绝不间断空格、零宽字符、行分隔符、私用区字符等不可见字符（以前断网开关只拒 ASCII 控制字符）；断网开关 `-InterfaceAlias` 里有不分大小写的重复时报错（以前悄悄去重）；排序改成按小写后的序数比较（以前跟随系统区域设置，中文系统上按拼音排，`Preview` 的 `InterfaceAliases` 顺序会和 Python 不同；规则内容不受影响）。报错里写出是哪个名字，不可见字符写成 `\uXXXX`。
+- 断网开关 `-IncludeAllPhysicalAdapters` 改用和核对网卡同一个口径（`HardwareInterface` 为 `True`），不再一处用 `Get-NetAdapter -Physical`、一处用 `HardwareInterface`。
+- 断网开关的 DHCP 检查：读不到 IPv4 设置的网卡（被禁用、没绑 IPv4）按“可能开着 DHCP”处理，`Install` 要求 `-DhcpServer`（以前当作没开，启用这张网卡以后续租会被拦）；报错里列出网卡名。上游和 DHCP 服务器同址的报错补一句改用静态 IP。已有不同规则时的报错写明先 `Remove` 再 `Install`。
+- 断网开关 `Install`、`Status` 发现处于连接状态的非隧道虚拟网卡时，在标准错误里打印警告。
+
+### `Test-ProxyState.ps1`
+
+- **默认 `-AddressFamily auto` 不再把两个地址族混在一起预检**：`normal`、`upstream-unreachable` 阶段只测隧道网卡上有默认路由的地址族，TUN 只接管 IPv4 时只发 IPv4 请求，物理网卡上的原生 IPv6 路由碰不到这次探测。显式给 `ipv4`、`ipv6` 时要求隧道有这一族的默认路由。输出加 `TunnelRouteFamilies`、`RequestedAddressFamily`、`ProbedAddressFamily`、`TunnelDetection`，每个探测的 `AddressFamily` 是实际测的那一族；`Coverage` 写明不比较跃点数。
+- 新增 `-TunnelInterfaceAlias`：客户端的隧道网卡名字认不出时，用它指明哪张是隧道网卡，不必用 `-AllowDirectWithoutTun`。
+
+### 只读体检（`Inspect-WindowsProxy.ps1`、`Inspect-WindowsFirewall.ps1`）
+
+- `Inspect-WindowsProxy.ps1` 遮盖路径：用户目录（含 AppData）下只保留最后一段和已知客户端名的上一级目录，其余目录名一律遮盖（以前会原样输出可执行文件的上一级目录名，路径只有两段时整段保留）。
+- `Inspect-WindowsFirewall.ps1` 的“系统或微软自带”只看规则组（Windows 资源串、`@{Microsoft.*}` 包、以 Microsoft、Windows、Core Networking 开头的组），不再在名字里找 Windows、Office、Edge 这类词（以前 “Clash for Windows”“WPS Office” 也被算成微软自带）。`EvidenceLimits` 写明 `MsixClaudeOutboundAllowCount`、`LanDnsPort53OutboundBlockCount` 实际数的是什么。字段名没有改。
+
+### 文档、离线网页和测试
+
+- `WINDOWS-KILL-SWITCH.md`、README、离线网页照新的行为改写：放置位置、`Remove` 的两种输出和还剩规则时怎样处理、LAN DNS Guard 换网卡要先 `Remove`、两个 `Status` 的退出码、`Test-ProxyState.ps1` 的地址族和 `-TunnelInterfaceAlias`、查看物理网卡的命令；「已知问题」只留还没修的。
+- `test_kill_switch_powershell.py`：新增所有平台都跑的源码检查（没有 BOM 的 `.ps1` 必须是纯 ASCII；两个管理脚本的共用函数逐字相同；权限掩码的算术；规则名和描述与 Python 规划器、文档里的手工撤销命令一致；三处隧道网卡正则相同），以及只在 Windows 上跑的用例：用合成的权限项测 `Get-SharedWriteGrant`，带中文、空格、不可见字符和重复的网卡名对照 Python 规划器，`Test-ProxyState.ps1` 的地址族选择，真的执行离线网页生成的 `Preview` 命令（只取 `Preview` 以前的部分）。
+
+### 没有改的
+
+- 路由规则、域名、网段的内容；Android 校验器；规划器的规则表。
+- 两个管理脚本仍然各带一份共用函数（没有抽成点源引用的公共文件：那样管理员权限下会多执行一个文件，也要多检查一个文件的权限），改由测试保证两份相同。
+- `-DhcpServer` 只收 RFC 1918、上游和 DHCP 同址装不了、虚拟网卡选不进保护范围、窗口输出不脱敏，这几条照旧，见 `WINDOWS-KILL-SWITCH.md` 的「已知问题」。
+
 ## v0.4.2（2026-11-27）— 自动同步默认不推送、体检与备份检查收紧、文档与脚本行为对齐
 
 > **升级前先看：自动同步的行为变了。** 默认不再推送，要推必须加 `--push`；工作区不干净时拒绝运行；源目录里的新文件要用 `--allow-new` 点名；仓库里人工改过的文件不会再被源目录悄悄覆盖。靠定时任务自动推送的，要自己改任务的命令行，详见 [AUTO-UPDATE.md](AUTO-UPDATE.md)。这一版没有改任何 `.ps1` 脚本。

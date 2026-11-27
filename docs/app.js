@@ -941,13 +941,14 @@
     // 卸载命令单独一块、单独复制：和安装命令一起粘贴执行等于装完马上又卸掉。
     const lanRemoveCmd = [
       "# 临时停用代理或卸载时，在管理员 PowerShell 移除这 4 条规则",
-      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Remove"
+      "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsLanDnsGuard.ps1 -Action Remove",
+      "# 输出 removed 才算删干净；输出 removed-other-rules-remain（退出码 2）时同组还剩别的规则，见 WINDOWS-KILL-SWITCH.md"
     ].join("\n");
     const ksRemoveCmd = [
       "# 恢复连接：在管理员窗口离线卸载（不依赖当前窗口的执行策略设置），再核对状态",
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Remove",
       "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Manage-WindowsKillSwitch.ps1 -Action Status",
-      "# Status 输出里的 ForeignOrUnexpectedRules 应为空；脚本跑不起来时用 WINDOWS-KILL-SWITCH.md 里的手工撤销命令"
+      "# Remove 输出 removed 才算删干净；输出 removed-other-rules-remain（退出码 2）时同组还剩别的规则，Status 的 ForeignOrUnexpectedRules 里也能看到，处理办法和脚本跑不起来时的手工撤销命令见 WINDOWS-KILL-SWITCH.md"
     ].join("\n");
     let ksCmd = null;
     if (!res.error) {

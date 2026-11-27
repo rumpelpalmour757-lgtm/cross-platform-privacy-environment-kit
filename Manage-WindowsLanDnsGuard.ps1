@@ -7,9 +7,14 @@ Prevents processes from querying private/CGNAT/ULA/link-local router DNS (TCP/UD
 physical network interfaces when switching routers or hotspots, while leaving router admin (80/443),
 DHCP (67/68), LAN sharing, loopback, and virtual TUN adapters unaffected.
 Preview computes the rule plan natively in PowerShell without invoking external interpreters or
-changing the host. Install and Remove require an elevated local Windows console, verify that the
-script directory is not writable by shared unprivileged groups, export a firewall policy backup
-with SHA-256 hash before Install, and write a private redacted log.
+changing the host. Install and Remove require an elevated local Windows console and write a private
+redacted log. Install refuses to run from a directory that unprivileged shared groups can change, or
+from a volume without NTFS/ReFS permissions, exports a firewall policy backup (its SHA-256 is recorded,
+not compared) before it adds rules, adds the rules disabled, and enables them only after they read
+back as planned; it removes what it added when anything fails. Install only adds rules when none of
+this kit's LAN DNS Guard rules exist: to change the adapters, run Remove first. Remove deletes the
+rules this script created, reports any other rule left in its group, and only warns about the
+script location (and runs without a log if none can be written).
 #>
 [CmdletBinding()]
 param(
@@ -40,6 +45,50 @@ try {
     # Output may not be attached to a console.
 }
 
+function Write-StderrWarning {
+    # Warnings go to stderr, so that the JSON on stdout stays parseable.
+    param([string]$Message)
+    [Console]::Error.WriteLine("WARNING: $Message")
+}
+
+function Test-LiteralInterfaceAlias {
+    # The same rules as build_kill_switch.py and build_lan_dns_guard.py: 1-128 characters, no
+    # surrounding white space, no leading '-', not "Any", none of * ? [ ] ` " \, and only
+    # characters Python's str.isprintable() accepts (no control, format, private-use, unassigned
+    # or unpaired surrogate code points, and no separator other than the ASCII space).
+    param([string]$Alias)
+    if ($null -eq $Alias -or $Alias.Length -lt 1 -or $Alias.Length -gt 128 -or
+        $Alias -cne $Alias.Trim() -or $Alias.StartsWith('-') -or
+        $Alias.Equals('any', [StringComparison]::OrdinalIgnoreCase) -or
+        $Alias.IndexOfAny([char[]]'*?[]`"\') -ge 0) {
+        return $false
+    }
+    for ($i = 0; $i -lt $Alias.Length; $i++) {
+        $category = [string][Globalization.CharUnicodeInfo]::GetUnicodeCategory($Alias, $i)
+        if ($category -in @('Control', 'Format', 'Surrogate', 'PrivateUse', 'OtherNotAssigned', 'LineSeparator', 'ParagraphSeparator')) {
+            return $false
+        }
+        if ($category -eq 'SpaceSeparator' -and $Alias[$i] -ne [char]' ') { return $false }
+        if ([char]::IsHighSurrogate($Alias[$i])) { $i++ }
+    }
+    $true
+}
+
+function Format-AliasForMessage {
+    # Quote an adapter name for an error message, with invisible characters written as \uXXXX.
+    param([string]$Alias)
+    if ($null -eq $Alias) { return '<none>' }
+    $text = -join @(foreach ($ch in $Alias.ToCharArray()) {
+        $category = [string][Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch)
+        if ($ch -ne [char]' ' -and $category -in @('Control', 'Format', 'Surrogate', 'PrivateUse', 'OtherNotAssigned', 'LineSeparator', 'ParagraphSeparator', 'SpaceSeparator')) {
+            '\u{0:X4}' -f [int]$ch
+        } else {
+            [string]$ch
+        }
+    })
+    "'$text'"
+}
+
 function ConvertTo-ValidatedInterfaceAliases {
     param([string[]]$Names)
     if (-not $Names -or $Names.Count -eq 0) {
@@ -48,23 +97,19 @@ function ConvertTo-ValidatedInterfaceAliases {
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     $clean = New-Object 'System.Collections.Generic.List[string]'
     foreach ($name in $Names) {
-        if ($null -eq $name -or $name.Length -lt 1 -or $name.Length -gt 128 -or
-            $name -cne $name.Trim() -or $name.StartsWith('-') -or
-            $name.Equals('any', [StringComparison]::OrdinalIgnoreCase) -or
-            $name -match '[\*\?\[\]`"\\]') {
-            throw 'Use literal interface aliases without wildcards or control characters.'
-        }
-        foreach ($ch in $name.ToCharArray()) {
-            if ([char]::IsControl($ch)) {
-                throw 'Use literal interface aliases without wildcards or control characters.'
-            }
+        if (-not (Test-LiteralInterfaceAlias $name)) {
+            throw "Use literal interface aliases without wildcards or control characters: $(Format-AliasForMessage $name)."
         }
         if (-not $seen.Add($name)) {
-            throw 'Interface aliases must be unique.'
+            throw "Interface aliases must be unique: $(Format-AliasForMessage $name) is given twice."
         }
         $clean.Add($name)
     }
-    $sorted = @($clean.ToArray() | Sort-Object { $_.ToLowerInvariant() })
+    # Ordinal order of the lower-cased names, like sorted(key=str.casefold) in build_lan_dns_guard.py.
+    # Sort-Object would follow the current culture (for example pinyin order on Chinese Windows).
+    $sorted = [string[]]$clean.ToArray()
+    $sortKeys = [string[]]@($sorted | ForEach-Object { $_.ToLowerInvariant() })
+    [Array]::Sort($sortKeys, $sorted, [StringComparer]::Ordinal)
     ,$sorted
 }
 
@@ -111,26 +156,29 @@ function New-LanDnsGuardPlan {
 
 function Assert-Elevated {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'Install and Remove must run from an elevated local PowerShell console.'
+    try {
+        $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+        if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Install and Remove must run from an elevated local PowerShell console.'
+        }
+        $identity.User
+    } finally {
+        $identity.Dispose()
     }
-    $identity.User
 }
 
 function Assert-UnlinkedLocalDirectory {
     param([string]$Path, [string]$Label)
-    if ([string]::IsNullOrWhiteSpace($Path) -or $Path.StartsWith('\\')) {
-        throw "$Label must be a local directory."
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path -notmatch '^[A-Za-z]:[\\/]') {
+        throw "$Label must be an existing, absolute local Windows directory."
     }
     $full = [IO.Path]::GetFullPath($Path)
-    if ($full.StartsWith('\\')) { throw "$Label must be a local directory." }
     $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($full))
-    if ($drive.DriveType -notin @([IO.DriveType]::Fixed, [IO.DriveType]::Removable, [IO.DriveType]::Ram)) {
-        throw "$Label must be on a local filesystem."
+    if ([string]$drive.DriveType -notin @('Fixed', 'Removable', 'Ram')) {
+        throw "$Label must be on a local drive."
     }
     if (-not [IO.Directory]::Exists($full)) {
-        throw "$Label does not exist."
+        throw "$Label does not exist: $full"
     }
     $ancestors = @()
     for ($dir = [IO.DirectoryInfo]::new($full); $null -ne $dir; $dir = $dir.Parent) {
@@ -139,38 +187,78 @@ function Assert-UnlinkedLocalDirectory {
     foreach ($dir in $ancestors) {
         $attr = [IO.File]::GetAttributes($dir.FullName)
         if (($attr -band [IO.FileAttributes]::ReparsePoint) -or -not ($attr -band [IO.FileAttributes]::Directory)) {
-            throw "$Label must be a real directory without redirected parents."
+            throw "$Label must be a real directory without redirected parents: '$($dir.FullName)' has the reparse-point attribute (a symbolic link, a junction, or a cloud-synced folder such as OneDrive). Use a local folder that is neither linked nor synced."
         }
     }
     $full
 }
 
-function Assert-SafeElevatedScriptPath {
-    if (-not $PSCommandPath) { return }
-    $scriptDir = Assert-UnlinkedLocalDirectory -Path (Split-Path -Parent $PSCommandPath) -Label 'Script directory'
-    $attr = [IO.File]::GetAttributes($PSCommandPath)
-    if (($attr -band [IO.FileAttributes]::ReparsePoint) -or ($attr -band [IO.FileAttributes]::Directory)) {
-        throw 'Manage-WindowsLanDnsGuard.ps1 must be a regular local file without links.'
+function Get-SharedWriteGrant {
+    # Which allow entries let a shared, unprivileged group change a file, or add, rename or delete
+    # files in a directory? Read and execute rights pass (for example the Users entry on
+    # C:\Program Files). Kept free of outside state: test_kill_switch_powershell.py runs it with
+    # synthetic entries and checks that both management scripts carry the same text.
+    param([object[]]$Rule)
+    $groupNames = @{
+        'S-1-1-0'      = 'Everyone'
+        'S-1-5-4'      = 'INTERACTIVE'
+        'S-1-5-11'     = 'Authenticated Users'
+        'S-1-5-32-545' = 'Users'
+        'S-1-5-32-546' = 'Guests'
     }
-    $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($scriptDir))
-    if ($drive.DriveFormat -notin @('NTFS', 'ReFS')) { return }
+    # WriteData, AppendData, WriteExtendedAttributes, DeleteSubdirectoriesAndFiles, WriteAttributes,
+    # Delete, ChangePermissions and TakeOwnership (0x000D0156 = 852310), plus GENERIC_ALL and
+    # GENERIC_WRITE. Write, Modify and FullControl all contain one of these bits.
+    $changeRights = [long]0x000D0156 -bor [long]0x10000000 -bor [long]0x40000000
+    @(foreach ($entry in @($Rule)) {
+        if ($null -eq $entry) { continue }
+        if ([string]$entry.AccessControlType -ne 'Allow') { continue }
+        # Inherit-only entries apply to items created later inside a directory, not to the item itself.
+        if (([int]$entry.PropagationFlags -band 2) -ne 0) { continue }
+        $sid = [string]$entry.IdentityReference
+        if (-not $groupNames.ContainsKey($sid)) { continue }
+        $rights = ([long]$entry.FileSystemRights) -band 0xFFFFFFFFL
+        if (($rights -band $changeRights) -ne 0) {
+            [pscustomobject]@{ Group = $groupNames[$sid]; Sid = $sid; Rights = [string]$entry.FileSystemRights }
+        }
+    })
+}
 
-    $sharedSids = @('S-1-1-0', 'S-1-5-32-545', 'S-1-5-11', 'S-1-5-32-546')
-    $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
-        [Security.AccessControl.FileSystemRights]::FullControl -bor
-        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [Security.AccessControl.FileSystemRights]::TakeOwnership
-    foreach ($itemPath in @($scriptDir, $PSCommandPath)) {
-        $acl = Get-Acl -LiteralPath $itemPath -ErrorAction Stop
-        foreach ($rule in $acl.Access) {
-            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
-            $sid = try { $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $null }
-            if ($sid -in $sharedSids -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
-                throw 'Move this kit into a private directory (such as your user profile or Program Files) before running elevated.'
+function Assert-SafeElevatedScriptPath {
+    # Install refuses to run elevated from a location that other local users could change. Remove
+    # only warns: if the script had been altered, this check would be gone too, so stopping Remove
+    # here protects nothing and only keeps the rules in place.
+    param([switch]$WarnOnly)
+    if (-not $PSCommandPath) { return }
+    $problems = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        $scriptDir = Assert-UnlinkedLocalDirectory -Path (Split-Path -Parent $PSCommandPath) -Label 'Script directory'
+        $attr = [IO.File]::GetAttributes($PSCommandPath)
+        if (($attr -band [IO.FileAttributes]::ReparsePoint) -or ($attr -band [IO.FileAttributes]::Directory)) {
+            $problems.Add('Manage-WindowsLanDnsGuard.ps1 must be a regular local file without links.')
+        }
+        $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($scriptDir))
+        if ($drive.DriveFormat -notin @('NTFS', 'ReFS')) {
+            $problems.Add("The script directory is on a $($drive.DriveFormat) volume, which has no file permissions, so any local user could change these scripts. Copy the kit to a private folder on an NTFS drive, for example under your user profile.")
+        } else {
+            foreach ($itemPath in @($scriptDir, $PSCommandPath)) {
+                $acl = Get-Acl -LiteralPath $itemPath -ErrorAction Stop
+                $entries = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+                foreach ($grant in @(Get-SharedWriteGrant -Rule $entries)) {
+                    $problems.Add("$($grant.Group) ($($grant.Sid)) may change '$itemPath' (rights: $($grant.Rights)). Move this kit into a folder that only administrators and your own account can change, for example a subfolder of your user profile or of C:\Program Files.")
+                }
             }
         }
+    } catch {
+        $problems.Add($_.Exception.Message)
     }
+    if ($problems.Count -eq 0) { return }
+    if ($WarnOnly) {
+        foreach ($problem in $problems) { Write-StderrWarning $problem }
+        Write-StderrWarning 'Continuing, because Remove only deletes rules that this kit created. Move the kit before the next Install.'
+        return
+    }
+    throw ($problems -join ' ')
 }
 
 function Set-PrivateFileAcl {
@@ -288,12 +376,19 @@ function Get-GuardPrerequisites {
         if ([string]$firewallProfile.Enabled -ne 'True' -or [string]$firewallProfile.AllowLocalFirewallRules -eq 'False') {
             throw 'All profiles must have Windows Firewall and local rule merging enabled.'
         }
+        foreach ($disabled in @($firewallProfile.DisabledInterfaceAliases | Where-Object { $_ -and $_ -ne 'NotConfigured' })) {
+            foreach ($alias in $Plan.InterfaceAliases) {
+                if ($disabled -eq 'Any' -or $alias -like $disabled) {
+                    throw "The $($firewallProfile.Name) profile excludes the selected adapter $(Format-AliasForMessage $alias) from Windows Firewall."
+                }
+            }
+        }
     }
     $allAdapters = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop)
     $physical = @($allAdapters | Where-Object { $_.HardwareInterface -eq $true })
     foreach ($alias in $Plan.InterfaceAliases) {
         if (@($physical | Where-Object { $_.Name -eq $alias }).Count -ne 1) {
-            throw "The selected physical adapter could not be identified: $alias"
+            throw "The selected physical adapter could not be identified: $alias. Only adapters whose HardwareInterface property is True can be selected; check with: Get-NetAdapter -IncludeHidden | Select-Object Name, HardwareInterface, Status"
         }
     }
     $otherActivePhysical = @($physical | Where-Object {
@@ -317,6 +412,13 @@ function Remove-OwnedRules {
         }
     }
     $removed
+}
+
+function Write-GuardLog {
+    param([string]$Event, $Data)
+    if ($null -eq $logWriter) { return }
+    $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Event = $Event; Action = $Action; Data = $Data } |
+        ConvertTo-Json -Depth 6 -Compress))
 }
 
 function Resolve-TargetAliases {
@@ -363,100 +465,196 @@ if ($Action -eq 'Status') {
         ActiveCount              = $active.Count
         PersistedNames           = @($persisted | ForEach-Object { $_.Name } | Sort-Object)
         ActiveNames              = @($active | ForEach-Object { $_.Name } | Sort-Object)
+        ForeignOrUnexpectedRules = @(@($persisted) + @($active) | Where-Object { -not (Test-OwnedRule $_) } |
+            ForEach-Object { $_.Name } | Sort-Object -Unique)
         MatchedPlan              = $matched
         AllActivePhysicalCovered = if ($null -ne $prereq) { $prereq.AllActivePhysicalCovered } else { $null }
     } | ConvertTo-Json -Depth 5
+    # Like the kill switch: exit code 2 when a plan was given and the rules do not match it.
+    if ($matched -eq $false) { exit 2 }
     exit 0
 }
 
 $operatorSid = Assert-Elevated
-Assert-SafeElevatedScriptPath
-$safeLogDir = Assert-UnlinkedLocalDirectory -Path $LogDirectory -Label 'LogDirectory'
-$stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ')
-$logPath = Join-Path $safeLogDir "CPPEK-LanDnsGuard-$stamp.jsonl"
+Assert-SafeElevatedScriptPath -WarnOnly:($Action -eq 'Remove')
 
-$fileStream = [IO.File]::Open($logPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-$logWriter = [IO.StreamWriter]::new($fileStream, [Text.UTF8Encoding]::new($false))
+# Install needs its private log. Remove carries on without one, so that a broken log location
+# cannot keep the rules in place.
+$logPath = $null
+$fileStream = $null
+$logWriter = $null
+$safeLogDir = $null
+$stamp = '{0}-{1}' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'), [Guid]::NewGuid().ToString('N')
 try {
+    $safeLogDir = Assert-UnlinkedLocalDirectory -Path $LogDirectory -Label 'LogDirectory'
+    $logPath = Join-Path $safeLogDir "CPPEK-LanDnsGuard-$stamp.jsonl"
+    $fileStream = [IO.File]::Open($logPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
     Set-PrivateFileAcl -FilePath $logPath -OperatorSid $operatorSid
-    if ($Action -eq 'Remove') {
-        $foreign = @(Get-PolicySet 'PersistentStore' | Where-Object { -not (Test-OwnedRule $_) })
-        if ($foreign.Count -gt 0) {
-            throw 'Refusing to remove unmanaged firewall rules sharing this rule group or prefix.'
-        }
-        $removed = Remove-OwnedRules -Names $KnownNames
-        $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Action = 'Remove'; RemovedCount = @($removed).Count } | ConvertTo-Json -Compress))
-        [pscustomobject][ordered]@{
-            Action       = 'Remove'
-            Group        = $Group
-            RemovedCount = @($removed).Count
-            RemovedNames = @($removed)
-            LogPath      = $logPath
-        } | ConvertTo-Json -Depth 4
-        exit 0
-    }
-
-    $prereq = Get-GuardPrerequisites -Plan $plan
-    if (-not $prereq.AllActivePhysicalCovered -and -not $AllowUncoveredPhysicalAdapters) {
-        throw 'At least one active physical adapter is not covered. Pass -IncludeAllPhysicalAdapters or -AllowUncoveredPhysicalAdapters.'
-    }
-    $foreign = @(Get-PolicySet 'PersistentStore' | Where-Object { -not (Test-OwnedRule $_) })
-    if ($foreign.Count -gt 0) {
-        throw 'Refusing to overwrite unmanaged firewall rules sharing this rule group or prefix.'
-    }
-
-    $backupPath = Join-Path $safeLogDir "CPPEK-LanDnsGuard-before-$stamp.wfw"
-    $netsh = Join-Path ([Environment]::SystemDirectory) 'netsh.exe'
-    & $netsh advfirewall export $backupPath | Out-Null
-    if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($backupPath)) {
-        throw 'Failed to export Windows Firewall backup before Install.'
-    }
-    Set-PrivateFileAcl -FilePath $backupPath -OperatorSid $operatorSid
-    $backupHash = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
-
-    [void](Remove-OwnedRules -Names $KnownNames)
-    foreach ($entry in $plan.Rules) {
-        New-NetFirewallRule -PolicyStore PersistentStore `
-            -Name $entry.Name `
-            -DisplayName $entry.Name `
-            -Group $Group `
-            -Description $Owner `
-            -Direction Outbound `
-            -Action Block `
-            -Enabled True `
-            -Profile Any `
-            -InterfaceAlias $plan.InterfaceAliases `
-            -Protocol $entry.Protocol `
-            -RemotePort $entry.RemotePorts `
-            -RemoteAddress $entry.RemoteAddresses `
-            -ErrorAction Stop | Out-Null
-    }
-
-    $persisted = @(Get-PolicySet 'PersistentStore')
-    $active = @(Get-PolicySet 'ActiveStore')
-    if (-not (Test-RulesMatch $persisted $plan $true) -or -not (Test-RulesMatch $active $plan $true)) {
-        [void](Remove-OwnedRules -Names $KnownNames)
-        throw 'Verification after Install failed; newly added rules were rolled back.'
-    }
-
-    $logWriter.WriteLine(([ordered]@{
-        Utc            = [DateTime]::UtcNow.ToString('o')
-        Action         = 'Install'
-        InterfaceCount = @($plan.InterfaceAliases).Count
-        RuleCount      = @($plan.Rules).Count
-        BackupSha256   = $backupHash
-    } | ConvertTo-Json -Compress))
-
-    [pscustomobject][ordered]@{
-        Action         = 'Install'
-        Group          = $Group
-        InterfaceCount = @($plan.InterfaceAliases).Count
-        RuleCount      = @($plan.Rules).Count
-        BackupPath     = $backupPath
-        BackupSha256   = $backupHash
-        LogPath        = $logPath
-        Verified       = $true
-    } | ConvertTo-Json -Depth 4
-} finally {
-    $logWriter.Dispose()
+    $logWriter = [IO.StreamWriter]::new($fileStream, [Text.UTF8Encoding]::new($false))
+    $logWriter.AutoFlush = $true
+} catch {
+    $logProblem = $_.Exception.Message
+    if ($null -ne $fileStream) { $fileStream.Dispose() }
+    $fileStream = $null
+    $logWriter = $null
+    if ($Action -ne 'Remove') { throw }
+    Write-StderrWarning "No log is written for this Remove: $logProblem"
+    $logPath = $null
 }
+
+$mutex = $null
+$ownsMutex = $false
+$created = @()
+$exitCode = 0
+try {
+    Write-GuardLog 'started' @{ PolicyGroup = $Group }
+    $mutex = [Threading.Mutex]::new($false, "Global\$Group")
+    try {
+        $ownsMutex = $mutex.WaitOne(0)
+    } catch [Threading.AbandonedMutexException] {
+        $ownsMutex = $true
+    }
+    if (-not $ownsMutex) { throw 'Another operation is already managing these rules.' }
+
+    if ($Action -eq 'Remove') {
+        $removed = @(Remove-OwnedRules -Names $KnownNames)
+        $persisted = @(Get-PolicySet 'PersistentStore')
+        $active = @(Get-PolicySet 'ActiveStore')
+        $ownedLeft = @(@($persisted) + @($active) | Where-Object { Test-OwnedRule $_ } | ForEach-Object { [string]$_.Name } | Sort-Object -Unique)
+        if ($ownedLeft.Count) {
+            throw "Some rules created by this kit remain visible after Remove: $($ownedLeft -join ', '). Run Status and retry Remove locally."
+        }
+        # Rules left in the group, or with these names, that this script did not create exactly as
+        # listed (for example a description edited in wf.msc). They are left alone and reported.
+        $remaining = @(@($persisted) + @($active) | ForEach-Object { [string]$_.Name } | Sort-Object -Unique)
+        $result = [ordered]@{
+            Status         = if ($remaining.Count) { 'removed-other-rules-remain' } else { 'removed' }
+            Action         = 'Remove'
+            Group          = $Group
+            RemovedCount   = $removed.Count
+            RemovedNames   = $removed
+            RemainingRules = $remaining
+            LogPath        = $logPath
+        }
+        if ($remaining.Count) {
+            $result.NextStep = "These rules use the group $Group or the names of this kit, but were not created by this script exactly as listed, so Remove left them in place. They may still block DNS. Check them in wf.msc (Outbound Rules, Filter by Group) or with Get-NetFirewallRule, and delete the ones you recognise with Remove-NetFirewallRule -PolicyStore PersistentStore -Name <name>. See WINDOWS-KILL-SWITCH.md."
+            $exitCode = 2
+        }
+        Write-GuardLog $result.Status @{ RemovedCount = $removed.Count; RemainingCount = $remaining.Count }
+        [pscustomobject]$result | ConvertTo-Json -Depth 4
+    } else {
+        $prereq = Get-GuardPrerequisites -Plan $plan
+        if (-not $prereq.AllActivePhysicalCovered -and -not $AllowUncoveredPhysicalAdapters) {
+            throw "At least one active physical adapter is not covered ($($prereq.OtherActivePhysicalAdapters -join ', ')). Pass -IncludeAllPhysicalAdapters or -AllowUncoveredPhysicalAdapters."
+        }
+        $persisted = @(Get-PolicySet 'PersistentStore')
+        $active = @(Get-PolicySet 'ActiveStore')
+        $foreign = @(@($persisted) + @($active) | Where-Object { -not (Test-OwnedRule $_) } | ForEach-Object { [string]$_.Name } | Sort-Object -Unique)
+        if ($foreign.Count) {
+            throw "Nothing was changed: these firewall rules share this rule group or these rule names but were not created by this script: $($foreign -join ', '). Inspect them (see WINDOWS-KILL-SWITCH.md) before installing."
+        }
+        if ($persisted.Count -or $active.Count) {
+            # Rules from an earlier Install: never deleted here, so a failed Install cannot leave the
+            # host with fewer rules than before.
+            if (-not ((Test-RulesMatch $persisted $plan $true) -and (Test-RulesMatch $active $plan $true))) {
+                throw 'Nothing was changed: LAN DNS Guard rules are already installed but differ from this plan (other adapters, disabled, or edited). To change the adapters, run -Action Remove first, then -Action Install with the new parameters.'
+            }
+            Write-GuardLog 'already-installed' @{ InterfaceCount = @($plan.InterfaceAliases).Count; RuleCount = @($plan.Rules).Count }
+            [pscustomobject][ordered]@{
+                Status         = 'already-installed'
+                Action         = 'Install'
+                Group          = $Group
+                InterfaceCount = @($plan.InterfaceAliases).Count
+                RuleCount      = @($plan.Rules).Count
+                LogPath        = $logPath
+                Verified       = $true
+            } | ConvertTo-Json -Depth 4
+        } else {
+            $backupPath = Join-Path $safeLogDir "CPPEK-LanDnsGuard-before-$stamp.wfw"
+            $netsh = Join-Path ([Environment]::SystemDirectory) 'netsh.exe'
+            & $netsh advfirewall export $backupPath | Out-Null
+            if ($LASTEXITCODE -ne 0 -or -not [IO.File]::Exists($backupPath)) {
+                throw 'Failed to export Windows Firewall backup before Install.'
+            }
+            Set-PrivateFileAcl -FilePath $backupPath -OperatorSid $operatorSid
+            $backupHash = (Get-FileHash -LiteralPath $backupPath -Algorithm SHA256).Hash
+            Write-GuardLog 'backup' @{ BackupSha256 = $backupHash }
+
+            # Stage all four rules disabled, check them, then enable them together.
+            foreach ($entry in $plan.Rules) {
+                $created += $entry.Name
+                New-NetFirewallRule -PolicyStore PersistentStore `
+                    -Name $entry.Name `
+                    -DisplayName $entry.Name `
+                    -Group $Group `
+                    -Description $Owner `
+                    -Direction Outbound `
+                    -Action Block `
+                    -Enabled False `
+                    -Profile Any `
+                    -InterfaceAlias $plan.InterfaceAliases `
+                    -Protocol $entry.Protocol `
+                    -RemotePort $entry.RemotePorts `
+                    -RemoteAddress $entry.RemoteAddresses `
+                    -ErrorAction Stop | Out-Null
+            }
+            if (-not (Test-RulesMatch @(Get-PolicySet 'PersistentStore') $plan $false)) {
+                throw 'The staged firewall rules differ from the plan.'
+            }
+            Write-GuardLog 'staged' @{ RuleNames = $created; Enabled = $false }
+            Enable-NetFirewallRule -PolicyStore PersistentStore -Name $created -ErrorAction Stop | Out-Null
+
+            $persisted = @(Get-PolicySet 'PersistentStore')
+            $active = @(Get-PolicySet 'ActiveStore')
+            if (-not (Test-RulesMatch $persisted $plan $true) -or -not (Test-RulesMatch $active $plan $true)) {
+                throw 'Verification after enabling the rules failed.'
+            }
+            Write-GuardLog 'installed' @{
+                InterfaceCount = @($plan.InterfaceAliases).Count
+                RuleCount      = @($plan.Rules).Count
+                BackupSha256   = $backupHash
+            }
+            [pscustomobject][ordered]@{
+                Status         = 'installed'
+                Action         = 'Install'
+                Group          = $Group
+                InterfaceCount = @($plan.InterfaceAliases).Count
+                RuleCount      = @($plan.Rules).Count
+                BackupPath     = $backupPath
+                BackupSha256   = $backupHash
+                LogPath        = $logPath
+                Verified       = $true
+            } | ConvertTo-Json -Depth 4
+        }
+    }
+} catch {
+    $original = $_
+    $rollback = $null
+    if ($created.Count) {
+        # Take away what this attempt added before reporting the error.
+        try {
+            [void](Remove-OwnedRules -Names $created)
+            $left = @(@(Get-PolicySet 'PersistentStore') + @(Get-PolicySet 'ActiveStore') |
+                Where-Object { $_.Name -cin $created -and (Test-OwnedRule $_) })
+            if ($left.Count) { throw 'Some rules created by this attempt remain visible.' }
+            $rollback = 'completed'
+        } catch {
+            $rollback = 'incomplete-run-Remove-locally'
+        }
+    }
+    try {
+        Write-GuardLog 'failed' @{ Rollback = $rollback; ErrorType = $original.Exception.GetType().Name }
+    } catch {
+        # Report the log path and rollback finding even if the log disk failed.
+    }
+    $logText = if ($logPath) { $logPath } else { 'none' }
+    if ($null -ne $rollback) {
+        throw "$($original.Exception.Message) Rollback of the rules added by this attempt: $rollback (Install only adds rules when none exist, so no earlier rules were removed). Log: $logText"
+    }
+    throw "$($original.Exception.Message) Log: $logText"
+} finally {
+    if ($ownsMutex) { $mutex.ReleaseMutex() }
+    if ($null -ne $mutex) { $mutex.Dispose() }
+    if ($null -ne $logWriter) { $logWriter.Dispose() } elseif ($null -ne $fileStream) { $fileStream.Dispose() }
+}
+exit $exitCode

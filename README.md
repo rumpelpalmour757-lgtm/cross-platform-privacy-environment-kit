@@ -135,13 +135,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Manage-WindowsLanDnsGu
 
 #### 4. 严格断网开关与真实 TUN 连通校验
 
-完整步骤见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md)（使用 DHCP 网卡时**必须**传入 `-DhcpServer`，安装前先 `Preview`；那一节的命令要先在窗口里执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`，不加 `-Force` 时 Windows PowerShell 5.1 会先问是否更改、默认答“否”；工具包请放在个人主目录下的子文件夹，这一版放在 `C:\Program Files` 下会被拒，见该文档的已知问题）。需要观察 TUN 开着时能不能连通时，用普通用户执行：
+完整步骤见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md)（使用 DHCP 网卡时**必须**传入 `-DhcpServer`，安装前先 `Preview`；那一节的命令要先在窗口里执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`，不加 `-Force` 时 Windows PowerShell 5.1 会先问是否更改、默认答“否”；工具包请放在个人主目录或 `C:\Program Files` 下的子文件夹，不要放在 OneDrive 同步的文件夹或 U 盘上：脚本在 `Install` 前检查这些，`Remove` 只提示不阻拦）。需要观察 TUN 开着时能不能连通时，用普通用户执行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-ProxyState.ps1 -Stage normal -AsJson
 ```
 
-它只向一个网址发一次 HTTPS `HEAD` 请求，看连没连上，不报告出口 IP；默认探测地址是 `https://example.com/`，会真的向这个站点发请求，可以用 `-ProbeUrl` 换成自己的站点。未检测到活动 TUN 隧道路由时，`-Stage normal` 会默认拒绝发包，防止误用真实 IP 直连测试站点；TUN 只接管 IPv4 时请加 `-AddressFamily ipv4`。`tun-down`、`client-down` 等断线阶段怎么做、结果怎么读，见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 的「断线演练」一节。
+它只向一个网址发一次 HTTPS `HEAD` 请求，看连没连上，不报告出口 IP；默认探测地址是 `https://example.com/`，会真的向这个站点发请求，可以用 `-ProbeUrl` 换成自己的站点。未检测到活动 TUN 隧道路由时，`-Stage normal` 会默认拒绝发包，防止误用真实 IP 直连测试站点；预检按地址族分开看，默认只测隧道接管了的地址族（TUN 只接管 IPv4 时只发 IPv4 请求），客户端的隧道网卡名字认不出时用 `-TunnelInterfaceAlias` 指明。`tun-down`、`client-down` 等断线阶段怎么做、结果怎么读，见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 的「断线演练」一节。
 
 #### 5. 配置目录与 Claude 本地数据私有快照
 
@@ -210,7 +210,7 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 ### 做过的
 
 - **跨平台离线单元测试**：全套 `test_*.py`（项数以运行结果为准），覆盖统一三态体检与可打印 HTML 渲染/转义、本地 MCP 桥接脱敏盘点、路由生成与校验、Windows 断网开关与 LAN DNS 规划器、配置快照安全边界、Android/iOS 规则静态校验、自动同步脚本在临时仓库里的同步、还原与隐私闸门、MIT 与零镜像回归检查、全仓 Markdown 相对链接与发布包断链检查，以及通过 Node.js 对 `docs/app.js` 与 Python `build_routing.py` / `build_kill_switch.py` 的一致性交叉对账（平台专属用例按运行环境显式跳过）。v0.4.1 在 Windows Python 3.13 与 Linux（WSL Ubuntu）Python 3 下跑过；v0.4.2 的全套由 GitHub Actions 在 ubuntu-latest 的 Python 3.10、3.13 和 windows-latest 的 Python 3.13 上跑（以合并前最后一次 CI 结果为准），本地另在 Linux 上用 Python 3.11、3.12、3.13 跑过。CI 的 Windows 是英文系统，没有在中文（繁体或简体）Windows 上跑过；Windows 上的中文代码页、长路径、目录联接、大小写不敏感这几类情况，是在 Linux 上用模拟（改输出编码、打补丁）测的。
-- **PowerShell 语法与逻辑核验**：所有 `.ps1` 脚本经解析与逻辑核查，确认 DHCP 漏填拦截与 PowerShell 5.1 严格模式空数组分支已修复；断网开关补集输出与 Python 规划器一致。CI 的 windows-latest 上用 Windows PowerShell 5.1 解析全部 `.ps1`，并实际运行两个管理脚本的 `Preview`（和 Python 规划器对账）与验收脚本的一项参数检查；`Install`、`Remove`、`Status` 没有在 Windows 上运行过。v0.4.2 没有改 `.ps1`，已确认还没修的问题见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 末尾的「已知问题」。
+- **PowerShell 语法与逻辑核验**：所有 `.ps1` 脚本经解析与逻辑核查，确认 DHCP 漏填拦截与 PowerShell 5.1 严格模式空数组分支已修复；断网开关补集输出与 Python 规划器一致。CI 的 windows-latest 上用 Windows PowerShell 5.1 解析全部 `.ps1`，并实际运行两个管理脚本的 `Preview`（和 Python 规划器对账，含中文、带空格和不可见字符的网卡名）、离线网页生成的预览命令和验收脚本的一项参数检查，另用合成数据测目录权限判断和 `Test-ProxyState.ps1` 的地址族选择；`Install`、`Remove`、`Status` 和断线演练没有在 Windows 上运行过。v0.4.2 以后改过 `.ps1`（未发布，见 [CHANGELOG.md](CHANGELOG.md)），这些改动要在 Windows 真机上跑过 `Preview`、`Install`、`Status`、`Remove` 才算验证；还没修的问题见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 末尾的「已知问题」。
 - **本机四层无侵入实测与可视化核验**：在隔离临时目录下完成 CLI `2.1.330` 冷启动归零对照、MSIX 安装包离线静态拆检与 39 目标路由分流对账；v0.4.1 时用无头浏览器实拍核验了 `docs/index.html` 明暗主题与矢量图的渲染排版，v0.4.2 改过的页面和架构图没有在浏览器里重新看过。
 - **公开前隐私与历史核查**：公开前重建单提交干净历史，确认仓库工作区与 Git 历史中均无本机用户名路径、个人代理节点链接、第三方原文镜像或微信转发原文。
 

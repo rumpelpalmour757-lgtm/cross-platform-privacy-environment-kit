@@ -173,7 +173,7 @@
           <div class="field">
             <label for="ksInterfaces">物理网卡名称（多个用英文逗号分隔）</label>
             <input type="text" id="ksInterfaces" value="WLAN" placeholder="例如：WLAN, 以太网">
-            <div class="field-hint">在 PowerShell 运行 <code>Get-NetAdapter -Physical | Select Name, Status</code> 查看准确名称；新增 USB 网卡或热点时，要先 <code>-Action Remove</code> 再用新参数 <code>-Action Install</code>，两步之间不受保护。虚拟网卡选不进保护范围。</div>
+            <div class="field-hint">在 PowerShell 运行 <code>Get-NetAdapter -IncludeHidden | Where-Object HardwareInterface | Select Name, Status</code> 查看准确名称（脚本的 <code>-IncludeAllPhysicalAdapters</code> 取的就是这些）；新增 USB 网卡或热点时，要先 <code>-Action Remove</code> 再用新参数 <code>-Action Install</code>，两步之间不受保护。虚拟网卡选不进保护范围。</div>
           </div>
           <div class="field">
             <label for="ksUpstreamIp">代理上游服务器 IPv4 地址</label>

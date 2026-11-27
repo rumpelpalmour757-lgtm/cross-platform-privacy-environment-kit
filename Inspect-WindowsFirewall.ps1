@@ -102,7 +102,13 @@ $outboundRules = Invoke-LocalFirewallProbe 'ActiveStore outbound rules' {
                     'Allow' {
                         $counts.Allow += 1
                         $nameText = "$($rule.Name) $($rule.DisplayName) $($rule.Group)"
-                        if ($nameText -match '(?i)(?:Microsoft\.|Windows|@\{Microsoft\.|@FirewallAPI\.dll|Core Networking|mDNS|Cortana|Edge|Office|OneDrive|Defender)') {
+                        $ruleGroup = [string]$rule.Group
+                        # Judge "Microsoft" by the rule group only: built-in rules use resource strings such
+                        # as @FirewallAPI.dll,-25000 or @%SystemRoot%\..., Microsoft packages use
+                        # @{Microsoft.*}, and Microsoft apps name groups like "Microsoft Edge". Matching words
+                        # anywhere in the name counted rules such as "Clash for Windows" or "WPS Office".
+                        if ($ruleGroup -match '(?i)^@(?:\{Microsoft\.|%(?:SystemRoot|windir)%\\|[a-z]:\\windows\\|[a-z0-9_.-]+\.(?:dll|exe|mui),)' -or
+                            $ruleGroup -match '(?i)^(?:Microsoft|Windows|Core Networking)\b') {
                             $allowBreakdown.BuiltInOrMicrosoft += 1
                         } else {
                             $allowBreakdown.OtherThirdPartyOrCustom += 1
@@ -140,7 +146,7 @@ $outboundRules = Invoke-LocalFirewallProbe 'ActiveStore outbound rules' {
 }
 
 if ($null -ne $outboundRules -and $outboundRules.MsixClaudeAllowCount -gt 0) {
-    $warnings.Add('Detected enabled Outbound Allow firewall rules matching Claude/Cowork (e.g. MSIX package rules); explicit Allow overrides DefaultOutboundAction=Block when TUN disconnects.')
+    $warnings.Add('Detected enabled Outbound Allow firewall rules whose name, display name or group contains the word Claude or Cowork (for example MSIX package rules); explicit Allow overrides DefaultOutboundAction=Block when TUN disconnects.')
 }
 
 [pscustomobject]@{
@@ -156,7 +162,9 @@ if ($null -ne $outboundRules -and $outboundRules.MsixClaudeAllowCount -gt 0) {
     EvidenceLimits                  = @(
         'Counts cover enabled outbound rules in ActiveStore across all profiles. Individual rules can have additional conditions.'
         'An unset or NotConfigured action is not a verified allow or block result.'
-        'Allow breakdown classifies rules heuristically by name/group without exposing paths or rule names; review third-party allow rules locally.'
+        'Allow breakdown is a heuristic on the rule group (Windows resource strings, Microsoft packages, groups starting with Microsoft, Windows or Core Networking) and does not expose paths or rule names; rules without such a group count as third-party or custom. Review third-party allow rules locally.'
+        'MsixClaudeOutboundAllowCount counts every enabled outbound allow rule whose name, display name or group contains the word Claude or Cowork, MSIX or not.'
+        'LanDnsPort53OutboundBlockCount counts enabled outbound block rules with remote port 53, whatever their addresses and adapters.'
         'This inventory sends no traffic and cannot verify whether tunnel failure blocks subsequent connections.'
     )
 } | ConvertTo-Json -Depth 5

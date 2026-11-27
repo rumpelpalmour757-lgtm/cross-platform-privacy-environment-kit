@@ -6,10 +6,14 @@ Observe HTTPS connectivity at an operator-selected Windows proxy stage.
 Run in a non-elevated terminal. This script never changes the network or prepares
 an outage. Because the probe disables curl proxy use (--noproxy "*") to follow
 OS system routing, running it in -Stage normal without an active TUN/tunnel route
-would bypass System Proxy and expose your real IP to ProbeUrl. Therefore, the
-script performs a local TUN route preflight check first and refuses to send a
-normal-stage probe if no active tunnel route is detected (unless explicitly
-overridden via -AllowDirectWithoutTun).
+would bypass System Proxy and expose your real IP to ProbeUrl. Therefore, in the
+normal and upstream-unreachable stages the script first checks for a default route
+on a tunnel adapter and refuses to send a probe without one (unless explicitly
+overridden via -AllowDirectWithoutTun). The check is per address family: with the
+default -AddressFamily auto, curl is limited to the families the tunnel has default
+routes for (an IPv4-only TUN means an IPv4-only probe), so a native IPv6 route on the
+physical adapter cannot carry the probe. Route metrics are not compared.
+Tunnel adapters are recognised by name; pass -TunnelInterfaceAlias to name them.
 .EXAMPLE
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-ProxyState.ps1 -Stage normal -AsJson
 #>
@@ -25,6 +29,8 @@ param(
 
     [ValidateSet('auto', 'ipv4', 'ipv6')]
     [string] $AddressFamily = 'auto',
+
+    [string[]] $TunnelInterfaceAlias,
 
     [ValidateRange(3, 60)]
     [int] $TimeoutSeconds = 12,
@@ -112,28 +118,48 @@ function Assert-ProbeUrl {
     }
 }
 
-function Test-ActiveTunnelRoutePresent {
+function Get-TunnelRouteFamily {
+    # Address families ('ipv4', 'ipv6') for which an Up tunnel adapter carries a default route.
     $tunnelPattern = '(?i)(?:^|[\s_.-])(?:u?tun\d*|wintun\d*|wireguard|tailscale|sing[-_]?box|mihomo|clash)(?:$|[\s_.-])'
     try {
-        $tunnelIndexes = @(
-            Get-NetAdapter -IncludeHidden -ErrorAction Stop |
-                Where-Object { $_.Status -eq 'Up' -and "$($_.Name) $($_.InterfaceDescription)" -match $tunnelPattern } |
-                ForEach-Object { [int]$_.ifIndex }
-        )
-        if ($tunnelIndexes.Count -eq 0) { return $false }
-        $prefixes = switch ($AddressFamily) {
-            'ipv4' { @('0.0.0.0/0', '0.0.0.0/1', '128.0.0.0/1') }
-            'ipv6' { @('::/0', '::/1', '8000::/1', '2000::/3') }
-            default { @('0.0.0.0/0', '0.0.0.0/1', '128.0.0.0/1', '::/0', '::/1', '8000::/1', '2000::/3') }
+        $upAdapters = @(Get-NetAdapter -IncludeHidden -ErrorAction Stop | Where-Object { $_.Status -eq 'Up' })
+        if ($TunnelInterfaceAlias) {
+            $tunnelAdapters = @($upAdapters | Where-Object { $TunnelInterfaceAlias -contains [string]$_.Name })
+        } else {
+            $tunnelAdapters = @($upAdapters | Where-Object { "$($_.Name) $($_.InterfaceDescription)" -match $tunnelPattern })
         }
+        $tunnelIndexes = @($tunnelAdapters | ForEach-Object { [int]$_.ifIndex })
+        if ($tunnelIndexes.Count -eq 0) { return }
         $tunnelRoutes = @(
             Get-NetRoute -PolicyStore ActiveStore -ErrorAction Stop |
-                Where-Object { $_.DestinationPrefix -in $prefixes -and ([int]$_.InterfaceIndex) -in $tunnelIndexes }
+                Where-Object { ([int]$_.InterfaceIndex) -in $tunnelIndexes }
         )
-        return ($tunnelRoutes.Count -gt 0)
+        if (@($tunnelRoutes | Where-Object { $_.DestinationPrefix -in @('0.0.0.0/0', '0.0.0.0/1', '128.0.0.0/1') }).Count) { 'ipv4' }
+        if (@($tunnelRoutes | Where-Object { $_.DestinationPrefix -in @('::/0', '::/1', '8000::/1', '2000::/3') }).Count) { 'ipv6' }
     } catch {
-        return $false
+        return
     }
+}
+
+function Resolve-ProbeAddressFamily {
+    # Which address family to probe, and whether the tunnel preflight passes. Kept free of outside
+    # state: test_kill_switch_powershell.py runs it with synthetic inputs. In the stages that need
+    # a tunnel route, "auto" narrows to the families the tunnel has default routes for: with an
+    # IPv4-only TUN, an unrestricted curl could reach an AAAA address over the physical adapter's
+    # native IPv6 route and show the test site the real address.
+    param([string] $Requested, [string] $Stage, [string[]] $TunnelFamilies)
+    $families = @($TunnelFamilies | Where-Object { $_ })
+    $hasIPv4 = $families -contains 'ipv4'
+    $hasIPv6 = $families -contains 'ipv6'
+    if ($Requested -in @('ipv4', 'ipv6')) {
+        return [pscustomobject] @{ Effective = $Requested; TunnelRouteDetected = ($families -contains $Requested) }
+    }
+    if ($Stage -notin @('normal', 'upstream-unreachable') -or ($hasIPv4 -and $hasIPv6)) {
+        return [pscustomobject] @{ Effective = 'auto'; TunnelRouteDetected = ($hasIPv4 -or $hasIPv6) }
+    }
+    if ($hasIPv4) { return [pscustomobject] @{ Effective = 'ipv4'; TunnelRouteDetected = $true } }
+    if ($hasIPv6) { return [pscustomobject] @{ Effective = 'ipv6'; TunnelRouteDetected = $true } }
+    [pscustomobject] @{ Effective = 'auto'; TunnelRouteDetected = $false }
 }
 
 function Test-HostInDnsCache {
@@ -147,7 +173,7 @@ function Test-HostInDnsCache {
 }
 
 function Invoke-HTTPSProbe {
-    param([uri] $Url)
+    param([uri] $Url, [string] $Family)
 
     $processInfo = New-Object Diagnostics.ProcessStartInfo
     $processInfo.FileName = $curlPath
@@ -163,7 +189,7 @@ function Invoke-HTTPSProbe {
     }
 
     $connectTimeout = [Math]::Min($TimeoutSeconds, 8)
-    $familyOption = switch ($AddressFamily) {
+    $familyOption = switch ($Family) {
         'ipv4' { '--ipv4 ' }
         'ipv6' { '--ipv6 ' }
         default { '' }
@@ -261,12 +287,18 @@ if ($null -ne $DirectUrl) {
     }
 }
 
-$tunnelRouteActive = Test-ActiveTunnelRoutePresent
+$tunnelFamilies = @(Get-TunnelRouteFamily)
+$familyDecision = Resolve-ProbeAddressFamily -Requested $AddressFamily -Stage $Stage -TunnelFamilies $tunnelFamilies
+$tunnelRouteActive = [bool]$familyDecision.TunnelRouteDetected
+$probeFamily = [string]$familyDecision.Effective
 if ($Stage -in @('normal', 'upstream-unreachable') -and -not $tunnelRouteActive -and -not $AllowDirectWithoutTun) {
+    $detectedText = if ($tunnelFamilies.Count) { $tunnelFamilies -join ' and ' } else { 'none' }
     throw (
-        'No active TUN/tunnel default route was detected. Because this script disables curl proxy use (--noproxy "*"), ' +
+        "No active TUN/tunnel default route was detected for the address family to probe ($AddressFamily; tunnel default routes found: $detectedText). " +
+        'Because this script disables curl proxy use (--noproxy "*"), ' +
         'running it with only a System HTTP/SOCKS Proxy would connect directly using your real IP. ' +
-        'Enable TUN mode first, or pass -AllowDirectWithoutTun if a direct probe is intentional.'
+        'Enable TUN mode first, name the tunnel adapter with -TunnelInterfaceAlias if it was not recognised, ' +
+        'or pass -AllowDirectWithoutTun if a direct probe is intentional.'
     )
 }
 
@@ -282,7 +314,7 @@ $results = @(
         )
         $dnsCached = Test-HostInDnsCache -HostName $target.Url.IdnHost
         $sampledUtc = [DateTime]::UtcNow.ToString('o')
-        $probe = Invoke-HTTPSProbe -Url $target.Url
+        $probe = Invoke-HTTPSProbe -Url $target.Url -Family $probeFamily
         $hasConnection = $probe.State -in @('https-response', 'tcp-connected-no-https-response')
         if ($expectResponse) {
             $verdict = if ($probe.State -eq 'https-response') { 'observed' } else { 'not-observed' }
@@ -299,7 +331,7 @@ $results = @(
             SampledUtc = $sampledUtc
             Role = $target.Role
             Host = $target.Url.IdnHost
-            AddressFamily = $AddressFamily
+            AddressFamily = $probeFamily
             DnsCachedBeforeProbe = $dnsCached
             Expected = if ($expectResponse) { 'https-response' } else { 'no-connection-observed' }
             Observation = $probe.State
@@ -317,8 +349,12 @@ $needsReview = @($results | Where-Object { $_.Verdict -ne 'observed' }).Count -g
 $report = [pscustomobject] [ordered] @{
     Stage = $Stage
     TunnelRouteDetected = $tunnelRouteActive
+    TunnelRouteFamilies = @($tunnelFamilies)
+    TunnelDetection = if ($TunnelInterfaceAlias) { 'operator-named-adapters' } else { 'adapter-name-pattern' }
+    RequestedAddressFamily = $AddressFamily
+    ProbedAddressFamily = $probeFamily
     DirectRouteProbeIncluded = $null -ne $DirectUrl
-    Coverage = 'One curl HEAD attempt per URL with curl proxy use disabled. Preflight verifies TUN route presence unless overridden. DNS transport, firewall block attribution, and other applications require separate verification.'
+    Coverage = 'One curl HEAD attempt per URL with curl proxy use disabled, limited to ProbedAddressFamily (auto means both IPv4 and IPv6). In the normal and upstream-unreachable stages the preflight requires a tunnel default route for that family unless overridden; route metrics and more specific routes on other adapters are not compared. DNS transport, firewall block attribution, and other applications require separate verification.'
     ObservationsMatchStage = -not $needsReview
     Probes = $results
 }

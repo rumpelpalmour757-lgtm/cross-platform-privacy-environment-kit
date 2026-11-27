@@ -5,9 +5,11 @@ Creates a read-only, redacted snapshot of proxy-related settings on Windows.
 
 .DESCRIPTION
 Uses local Windows APIs only. Does not inspect process arguments or subscription
-files, and does not query an external service. Custom directory segments under
-UserProfile, custom network interface aliases, and custom startup entry names are
-masked to prevent leaking personal or corporate identifiers.
+files, and does not query an external service. Directory names under UserProfile
+(AppData included) are masked except a folder named after a known client, and
+custom network interface aliases and custom startup entry names are masked, to
+prevent leaking personal or corporate identifiers. Paths under Program Files that
+are more than three levels deep keep only their first folder and the file name.
 #>
 
 [CmdletBinding()]
@@ -107,9 +109,15 @@ function Protect-LocalPath {
         if ($Path.StartsWith($prefix + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $rel = $Path.Substring($prefix.Length + 1)
             $parts = @($rel -split '\\' | Where-Object { $_ })
-            if ($label -eq '<UserProfile>' -and $parts.Count -gt 2) {
-                # Redact intermediate personal/project directories under UserProfile.
-                return "$label\...\$($parts[-2])\$($parts[-1])"
+            if ($label -in @('<UserProfile>', '<LocalApplicationData>', '<ApplicationData>')) {
+                # Folders inside the profile often carry personal, project or employer names. Keep the
+                # last segment, and the folder holding it only when that folder is a known client name.
+                if ($parts.Count -le 1) { return "$label\$rel" }
+                $parent = [string]$parts[-2]
+                if ($clientNames.ContainsKey($parent) -or $parent -match $installedNamePattern) {
+                    return "$label\...\$parent\$($parts[-1])"
+                }
+                return "$label\...\$($parts[-1])"
             }
             if ($parts.Count -gt 3) {
                 return "$label\$($parts[0])\...\$($parts[-1])"
