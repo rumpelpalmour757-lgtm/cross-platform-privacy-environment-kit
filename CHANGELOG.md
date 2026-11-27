@@ -12,6 +12,7 @@ v0.4.2 以后合并、还没有发版的改动。这一节没有改任何 `.ps1`
 - `tests.yml` 可以手动运行（`workflow_dispatch`），给发布前补跑用。
 - `release.yml` 打包前查要打包的那个提交上“测试”工作流的结果：只认 push 和手动运行（pull request 测的是合并结果，不是这个提交本身）；这个提交上还有没跑完的就拒绝；取最近开始的一次，结论必须是 success，`tests` 的三个任务都在而且都是 success，`archive` 两项也要是 success。没有记录、还在跑、有任务没过都拒绝发布，什么都不建；重跑办法写在 `release.yml` 开头（Re-run all jobs；没有记录时在“测试”里 Run workflow，选指向这个提交的分支或标签）。工作流的权限加了 `actions: read`，用来读运行记录。
 - `test_public_release.py` 新增检查：`release.yml` 闸门里列的三个任务名和 `tests.yml` 的矩阵对得上，查测试结果在打包之前，`tests.yml` 可以手动运行。
+- `test_public_release.py` 新增发布闸门的行为测试：从 `release.yml` 里取出“查测试结果”那一步的脚本原样运行，`gh` 换成假的（按构造的运行记录回答，`--jq` 的过滤式交给 jq），试全绿、重跑转绿、没有记录、别的提交上的运行、只有 pull request 的运行、最近一次没过、还在跑或排队、结论不是 success、少了任务、有任务没过或被跳过、接口出错，核对退出码和拒绝的原因。闸门里的每一项检查（只认 push 和手动运行、按提交查、取最近开始的一次、没跑完就拒绝、结论必须是 success、逐个任务查）改松了，都有用例变红。只在 Linux 上跑（发布工作流跑在 ubuntu-latest），没有 bash 或 jq 时跳过，在 GitHub Actions 上缺了就报错、不跳过；发布包里没有 `.github/`，在包里显示为跳过。
 
 ### 自动同步（`tools/auto_update.py`、`AUTO-UPDATE.md`）
 
@@ -29,7 +30,7 @@ v0.4.2 以后合并、还没有发版的改动。这一节没有改任何 `.ps1`
 
 ### 没有验证的
 
-- 新加的 CI 步骤和任务（Windows 环境打印、Windows 模拟、`archive` 两项）和发布闸门，要推到 GitHub 上跑过才知道能不能跑通。本地只用 PyYAML 解析了两个工作流（这里没有 actionlint）；发布闸门那段脚本用假的 `gh` 和构造的运行记录试过 12 种情况（没有记录、只有 pull request 的运行、还在跑或排队、最近一次没过、重跑转绿、全绿、缺任务、任务被跳过、被取消、接口出错），没有调用过真的 GitHub API，也没有真的发过版。
+- 新加的 CI 步骤和任务（Windows 环境打印、Windows 模拟、`archive` 两项）和发布闸门，要推到 GitHub 上跑过才知道能不能跑通。本地只用 PyYAML 解析了两个工作流（这里没有 actionlint）；发布闸门那段脚本只用假的 `gh` 和构造的运行记录测过（上面那项测试），没有调用过真的 GitHub API，也没有真的发过版：真的 gh 用它内置的 jq 实现执行 `--jq`，测试里用的是系统的 jq；接口返回的任务名是不是正好等于 `tests.yml` 里 `name:` 展开后的样子，也要真的跑过才知道。
 - 这里没有 Windows 和 PowerShell：Windows 那边新加的步骤，以及 `archive` 在 windows-latest 上把包解到中文目录里跑的那几项 PowerShell 测试，都没有跑过。
 - 本地在 Linux 上用 Python 3.10、3.13 跑过全套，原样和 Windows 模拟下各一遍；也照 `archive` 的做法把包解到带空格和中文的目录里跑过。
 
