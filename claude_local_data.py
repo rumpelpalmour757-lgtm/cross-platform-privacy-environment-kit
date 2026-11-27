@@ -106,6 +106,8 @@ AUTH_HEADER_NAMES = {
 }
 # Command-line options that take a "Name: value" header.
 HEADER_FLAGS = ("-h", "--header", "-header", "-headers")
+# The same options written with "=" and no space: --header=Name: value, -H=Name: value.
+HEADER_FLAG_EQUALS = re.compile(r"(?:^|(?<=[\s'\"]))(-h|--header|-header|-headers)=", re.IGNORECASE)
 FLAG_PATTERN = re.compile(r"^-{1,2}([A-Za-z][A-Za-z0-9_-]*)$")
 MAX_LISTED_FINDINGS = 10
 # Windows refuses longer paths unless long paths are enabled (folders: 248 characters).
@@ -222,7 +224,9 @@ def _string_has_secret(text):
     for match in ASSIGNMENT_PATTERN.finditer(literal):
         if _secret_named(match.group(1), broad=True) and _is_literal_secret_value(match.group(2), in_command=True):
             return True
-    return any(_header_has_secret(literal, match) for match in HEADER_PATTERN.finditer(literal))
+    # Read --header=Name: value as --header Name: value. "=" becomes a space, so offsets stay the same.
+    headers = HEADER_FLAG_EQUALS.sub(lambda match: match.group(1) + " ", literal)
+    return any(_header_has_secret(headers, match) for match in HEADER_PATTERN.finditer(headers))
 
 
 def _find_inline_secrets(document):

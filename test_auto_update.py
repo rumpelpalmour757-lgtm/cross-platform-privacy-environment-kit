@@ -374,8 +374,10 @@ class InProcessTests(SandboxTestCase):
         write(box.source / "new.py", "NEW = 1\n")
         head = box.head()
         log = io.StringIO()
+        # main() reconfigures sys.stdout and sys.stderr; both are redirected so the test
+        # runner's own streams are left alone.
         with mock.patch.object(self.mod, "non_noreply_emails", side_effect=KeyboardInterrupt), \
-                contextlib.redirect_stdout(log):
+                contextlib.redirect_stdout(log), contextlib.redirect_stderr(io.StringIO()):
             code = self.mod.main(["--source", str(box.source), "--outputs", str(box.outputs),
                                   "--allow-new", "new.py"])
         self.assertEqual(code, 3, log.getvalue())
@@ -477,6 +479,20 @@ class ChildProcessOutputTests(SandboxTestCase):
         self.assertEqual(code, 1, output)
         self.assertIn("unit tests failed", output)
         self.assertIn("'設定檔' != '設定'", output)
+
+    def test_argument_errors_are_written_in_utf8_like_the_rest_of_the_log(self):
+        # The scheduled task appends stdout and stderr to one log (">> log 2>&1"). stdout is
+        # UTF-8; stderr, where argparse writes its errors, used to follow the output encoding
+        # (cp950 here), so the log mixed two encodings and simplified characters became \uXXXX.
+        box = self.box
+        box.env["PYTHONIOENCODING"] = "cp950"
+        option = "--来源目录"  # 来 is not in cp950
+        command = [sys.executable, "-B", str(box.repo / "tools" / "auto_update.py"), option]
+        result = subprocess.run(command, cwd=box.repo, env=box.env, capture_output=True, timeout=120)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn(b"unrecognized arguments", result.stderr)
+        self.assertIn(option.encode("utf-8"), result.stderr)
+        self.assertEqual(box.status(), "")
 
 
 class CaseOnlyRenameTests(SandboxTestCase):
