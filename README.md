@@ -135,13 +135,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Manage-WindowsLanDnsGu
 
 #### 4. 严格断网开关与真实 TUN 连通校验
 
-完整步骤见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md)（使用 DHCP 网卡时**必须**传入 `-DhcpServer`，安装前先 `Preview`；那一节的命令要先在窗口里执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`，不加 `-Force` 时 Windows PowerShell 5.1 会先问是否更改、默认答“否”；工具包请放在个人主目录或 `C:\Program Files` 下的子文件夹，不要放在 OneDrive 同步的文件夹或 U 盘上：脚本在 `Install` 前检查这些，`Remove` 只提示不阻拦）。需要观察 TUN 开着时能不能连通时，用普通用户执行：
+完整步骤见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md)（使用 DHCP 网卡时**必须**传入 `-DhcpServer`，安装前先 `Preview`；那一节的命令要先在窗口里执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`，不加 `-Force` 时 Windows PowerShell 5.1 会先问是否更改、默认答“否”；工具包请放在个人主目录或 `C:\Program Files` 下的子文件夹，不要放在 OneDrive 同步的文件夹里，也不要放在 FAT32、exFAT 格式的 U 盘上：`Install` 前会检查上级目录有没有重解析点（符号链接、目录联接；OneDrive 接管的文件夹通常也带，没有实测）和所在卷的文件系统，`Remove` 只提示不阻拦）。需要观察 TUN 开着时能不能连通时，用普通用户执行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-ProxyState.ps1 -Stage normal -AsJson
 ```
 
-它只向一个网址发一次 HTTPS `HEAD` 请求，看连没连上，不报告出口 IP；默认探测地址是 `https://example.com/`，会真的向这个站点发请求，可以用 `-ProbeUrl` 换成自己的站点。未检测到活动 TUN 隧道路由时，`-Stage normal` 会默认拒绝发包，防止误用真实 IP 直连测试站点；预检按地址族分开看，默认只测隧道接管了的地址族（TUN 只接管 IPv4 时只发 IPv4 请求），客户端的隧道网卡名字认不出时用 `-TunnelInterfaceAlias` 指明。`tun-down`、`client-down` 等断线阶段怎么做、结果怎么读，见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 的「断线演练」一节。
+它只向一个网址发一次 HTTPS `HEAD` 请求，看连没连上，不报告出口 IP；默认探测地址是 `https://example.com/`，会真的向这个站点发请求，可以用 `-ProbeUrl` 换成自己的站点。未检测到活动 TUN 隧道路由时，`-Stage normal` 会默认拒绝发包，防止误用真实 IP 直连测试站点；预检按地址族分开看，默认只测隧道接管了的地址族（TUN 只接管 IPv4 时只发 IPv4 请求），客户端的隧道网卡名字认不出时用 `-TunnelInterfaceAlias` 指明（只填客户端建的虚拟网卡；填 Wi-Fi、以太网这类物理网卡会被拒，不发包）。`tun-down`、`client-down` 等断线阶段怎么做、结果怎么读，见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 的「断线演练」一节。
 
 #### 5. 配置目录与 Claude 本地数据私有快照
 

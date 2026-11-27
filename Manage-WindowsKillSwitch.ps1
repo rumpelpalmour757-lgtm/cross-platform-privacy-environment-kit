@@ -336,7 +336,7 @@ function Format-DhcpProblem {
         $parts += "DHCP is enabled on $((@($Check.Enabled) | ForEach-Object { Format-AliasForMessage $_ }) -join ', ') but no -DhcpServer was given; lease renewal would be blocked and the network could drop."
     }
     if (@($Check.Unknown).Count) {
-        $parts += "The DHCP setting of $((@($Check.Unknown) | ForEach-Object { Format-AliasForMessage $_ }) -join ', ') could not be read (the adapter is disabled, or IPv4 is not bound to it); if it is later enabled with DHCP, its lease requests would be blocked. Enable it and run Preview again, leave it out of -InterfaceAlias, or pass -DhcpServer."
+        $parts += "The DHCP setting of $((@($Check.Unknown) | ForEach-Object { Format-AliasForMessage $_ }) -join ', ') could not be read (the adapter is disabled, or IPv4 is not bound to it); if it is later enabled with DHCP, its lease requests would be blocked. Enable it and run Preview again, select the adapters with -InterfaceAlias without it (instead of -IncludeAllPhysicalAdapters), or pass -DhcpServer."
     }
     "$($parts -join ' ') $DhcpGuidance"
 }
@@ -678,7 +678,8 @@ if ($Action -eq 'Preview') {
         }
     }
     $plan | ConvertTo-Json -Depth 8
-    return
+    # exit, not return: "& .\Manage-WindowsKillSwitch.ps1 ...; $LASTEXITCODE" then shows 0, as with LAN DNS Guard.
+    exit 0
 }
 
 Import-Module NetSecurity -ErrorAction Stop
@@ -695,7 +696,7 @@ if ($Action -eq 'Status') {
     $status | ConvertTo-Json -Depth 8
     Write-VirtualAdapterWarning $status.Prerequisites
     if ($status.ConfigurationMatched -eq $false) { exit 2 }
-    return
+    exit 0
 }
 
 $operatorSid = $null

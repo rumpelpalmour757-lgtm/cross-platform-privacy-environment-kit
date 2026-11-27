@@ -57,6 +57,83 @@ FAMILY_CASES = [
     (("ipv6", "upstream-unreachable", ["ipv4", "ipv6"]), ("ipv6", True)),
 ]
 
+# Synthetic adapters for Select-NamedTunnelAdapter (Test-ProxyState.ps1), and what each set of
+# -TunnelInterfaceAlias names must give: (tunnel ifIndex values, missing, not Up, physical).
+TUNNEL_ADAPTERS = [
+    {"Name": "WLAN", "InterfaceDescription": "Intel(R) Wi-Fi 6 AX201 160MHz", "Status": "Up", "HardwareInterface": True, "ifIndex": 12},
+    {"Name": "以太网", "InterfaceDescription": "Realtek PCIe GbE Family Controller", "Status": "Disconnected", "HardwareInterface": True, "ifIndex": 5},
+    {"Name": "Meta Tunnel", "InterfaceDescription": "Meta Tunnel", "Status": "Up", "HardwareInterface": False, "ifIndex": 30},
+    {"Name": "tun-off", "InterfaceDescription": "Wintun Userspace Tunnel", "Status": "Disconnected", "HardwareInterface": False, "ifIndex": 31},
+]
+NAMED_TUNNEL_CASES = [
+    (["Meta Tunnel"], ([30], [], [], [])),
+    (["meta tunnel"], ([30], [], [], [])),            # Windows adapter names are not case-sensitive
+    (["WLAN"], ([], [], [], ["WLAN"])),               # a physical adapter never counts as a tunnel
+    (["以太网"], ([], [], [], ["以太网"])),            # physical, even when it is down
+    (["Meta Tunnel", "WLAN"], ([30], [], [], ["WLAN"])),
+    (["tun-off"], ([], [], ["tun-off"], [])),
+    (["no-such-adapter"], ([], ["no-such-adapter"], [], [])),
+]
+
+FAKE_IP_SAMPLES = ["198.18.0.1", "198.19.255.254", "198.17.255.255", "198.20.0.0", "93.184.216.34",
+                   "fc00::1", "fc00:3fff:ffff::1", "fc00:4000::1", "fc01::1", "fd00::1", "2606:2800:220:1::",
+                   "", "not-an-address"]
+# (DNS cache entries as Get-DnsClientCache gives them: Type 1 = A, 28 = AAAA, 5 = CNAME) -> FakeIpOnly
+FAKE_IP_CACHE_CASES = [
+    ([{"Type": 1, "Data": "198.18.0.5"}], True),
+    ([{"Type": 28, "Data": "fc00::5"}, {"Type": 1, "Data": "198.18.3.4"}], True),
+    ([{"Type": 1, "Data": "198.18.0.5"}, {"Type": 1, "Data": "93.184.216.34"}], False),
+    ([{"Type": 1, "Data": "93.184.216.34"}], False),
+    ([{"Type": 5, "Data": "cdn.example.net"}], False),
+    ([{"Type": 1, "Data": ""}], False),
+    ([], False),
+]
+
+# Rule groups for Test-MicrosoftRuleGroup (Inspect-WindowsFirewall.ps1) -> counted as built in or Microsoft.
+RULE_GROUP_CASES = [
+    ("@FirewallAPI.dll,-25000", True),
+    ("@%SystemRoot%\\system32\\firewallapi.dll,-37302", True),
+    ("@C:\\Windows\\system32\\wfapigp.dll,-1", True),
+    ("@{Microsoft.WindowsCalculator_11.2405.2.0_x64__8wekyb3d8bbwe?ms-resource://Microsoft.WindowsCalculator/Resources/AppStoreName}", True),
+    ("@{MicrosoftWindows.Client.CBS_1000.22700.1047.0_x64__cw5n1h2txyewy?ms-resource://MicrosoftWindows.Client.CBS/Resources/DisplayName}", True),
+    ("@{MicrosoftWindows.Client.WebExperience_424.1301.270.9_x64__cw5n1h2txyewy?ms-resource://MicrosoftWindows.Client.WebExperience/Resources/AppName}", True),
+    ("@{windows.immersivecontrolpanel_10.0.6.1000_neutral_neutral_cw5n1h2txyewy?ms-resource://windows.immersivecontrolpanel/resources/DisplayName}", True),
+    ("@{MicrosoftCorporationII.QuickAssist_2.0.21.0_x64__8wekyb3d8bbwe?ms-resource://MicrosoftCorporationII.QuickAssist/Resources/AppName}", True),
+    ("@{MSTeams_24004.1403.2634.2418_x64__8wekyb3d8bbwe?ms-resource://MSTeams/Resources/AppName}", True),
+    ("Microsoft Edge", True),
+    ("Core Networking", True),
+    ("Windows Remote Management", True),
+    ("Clash for Windows", False),
+    ("WPS Office", False),
+    ("Bitdefender Agent", False),
+    ("WindowsApps helper", False),
+    ("@{SomeVendor.SomeApp_1.2.3.0_x64__abcdefghjkmnp?ms-resource://SomeVendor.SomeApp/Resources/AppName}", False),
+    ("@{SomeVendor.Fake8wekyb3d8bbwe_1.0.0.0_x64__abcdefghjkmnp?ms-resource://SomeVendor/Resources/AppName}", False),
+    ("", False),
+]
+
+# Inspect-WindowsProxy.ps1 Protect-LocalPath: (path, expected) with a synthetic profile C:\Users\alice.
+PROFILE_FOLDERS = [
+    ("C:\\Users\\alice\\AppData\\Local", "<LocalApplicationData>"),
+    ("C:\\Users\\alice\\AppData\\Roaming", "<ApplicationData>"),
+    ("C:\\Program Files", "<ProgramFiles>"),
+    ("C:\\Users\\alice", "<UserProfile>"),
+]
+MASK_CASES = [
+    ("C:\\Users\\alice\\Desktop\\v2rayN 张三公司专用\\v2rayN.exe", "<UserProfile>\\...\\v2rayN.exe"),
+    ("C:\\Users\\alice\\Tools\\Clash Verge 李四\\clash-verge.exe", "<UserProfile>\\...\\clash-verge.exe"),
+    ("C:\\Users\\alice\\Desktop\\Tailscale 王五的电脑\\tailscale.exe", "<UserProfile>\\...\\tailscale.exe"),
+    ("C:\\Users\\alice\\Desktop\\张三工作VPN\\v2rayN.exe", "<UserProfile>\\...\\v2rayN.exe"),
+    ("C:\\Users\\alice\\Desktop\\v2rayN\\v2rayN.exe", "<UserProfile>\\...\\v2rayN\\v2rayN.exe"),
+    ("C:\\Users\\alice\\Desktop\\v2rayN 7.2.1\\v2rayN.exe", "<UserProfile>\\...\\v2rayN 7.2.1\\v2rayN.exe"),
+    ("C:\\Users\\alice\\Apps\\Clash Verge Rev\\clash-verge.exe", "<UserProfile>\\...\\Clash Verge Rev\\clash-verge.exe"),
+    ("C:\\Users\\alice\\AppData\\Local\\Programs\\mihomo-party\\mihomo-party.exe",
+     "<LocalApplicationData>\\...\\mihomo-party\\mihomo-party.exe"),
+    ("C:\\Users\\alice\\AppData\\Local\\张三的项目\\v2rayN\\v2rayN.exe", "<LocalApplicationData>\\...\\v2rayN\\v2rayN.exe"),
+    ("C:\\Users\\alice\\v2rayN.exe", "<UserProfile>\\v2rayN.exe"),
+    ("C:\\Program Files\\Clash Verge\\clash-verge.exe", "<ProgramFiles>\\Clash Verge\\clash-verge.exe"),
+]
+
 ACCEPTED_ALIASES = ["无线网络连接", "以太网 2", "以太网", "Wi-Fi 2", "wifi", "WLAN", "Ethernet 10", "Ethernet 9"]
 REJECTED_ALIAS_LISTS = [
     ["Wi\u00a0Fi"],          # no-break space
@@ -69,6 +146,11 @@ REJECTED_ALIAS_LISTS = [
 ]
 
 
+# Windows PowerShell writes redirected output in the console code page unless told otherwise;
+# the scripts set UTF-8 themselves, functions pulled out of them do not.
+UTF8_OUTPUT = "$ErrorActionPreference = 'Stop'\n[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n"
+
+
 def _function_source(text, name):
     match = re.search(r"^function " + re.escape(name) + r" \{\n.*?^\}$", text, re.M | re.S)
     if not match:
@@ -78,6 +160,39 @@ def _function_source(text, name):
 
 def _read_script(name):
     return (SCRIPTS / name).read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+
+
+def _main_body(text):
+    """The top-level statements of a script: everything except its function definitions."""
+    return re.sub(r"^function [A-Za-z0-9-]+ \{\n.*?^\}$", "", text, flags=re.M | re.S)
+
+
+def _block(text, start, end):
+    """The lines strictly between the first line equal to `start` and the next line equal to `end`."""
+    match = re.search("^" + re.escape(start) + r"\n(.*?)^" + re.escape(end) + "$", text, re.M | re.S)
+    if not match:
+        raise AssertionError(f"block {start!r} .. {end!r} not found")
+    return match.group(1)
+
+
+def _ps_single_quoted(text, variable):
+    """The value of a one-line assignment $variable = '...' (PowerShell single quotes, '' for ')."""
+    found = re.findall(r"^\s*\$" + re.escape(variable) + r" = '((?:[^']|'')*)'$", text, re.M)
+    if len(found) != 1:
+        raise AssertionError(f"${variable} = '...' found {len(found)} times")
+    return found[0].replace("''", "'")
+
+
+def _as_list(value):
+    # Windows PowerShell 5.1 can write a one-element array as a bare value.
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _client_folder_match(pattern, name):
+    # PowerShell's -match is case-insensitive; the patterns only use syntax that .NET and Python share.
+    return re.search(pattern, name, re.IGNORECASE) is not None
 
 
 def _extract_function_command(script, function_name):
@@ -183,6 +298,163 @@ class PowerShellSourcePinTests(unittest.TestCase):
             self.assertEqual(len(found), 1, name)
             patterns[name] = found[0]
         self.assertEqual(len(set(patterns.values())), 1, patterns)
+
+    # The checks below pin the safety-relevant control flow of the management scripts, which no
+    # test runs (Install, Remove and Status change the firewall). Each one fails if the line it
+    # names is reverted to the v0.4.2 behaviour.
+
+    def test_remove_is_never_stopped_by_the_location_or_log_checks(self):
+        for name in MANAGEMENT_SCRIPTS:
+            with self.subTest(script=name):
+                text = _read_script(name)
+                body = _main_body(text)
+                calls = re.findall(r"^Assert-SafeElevatedScriptPath\b.*$", body, re.M)
+                self.assertEqual(calls, ["Assert-SafeElevatedScriptPath -WarnOnly:($Action -eq 'Remove')"])
+                # The log is required for Install only.
+                self.assertEqual(body.count("    if ($Action -ne 'Remove') { throw }\n"), 1)
+                self.assertIn('Write-StderrWarning "No log is written for this Remove: $logProblem"', body)
+                check = _function_source(text, "Assert-SafeElevatedScriptPath")
+                self.assertIn("    if ($WarnOnly) {\n        foreach ($problem in $problems) { Write-StderrWarning $problem }", check)
+                self.assertTrue(check.rstrip("}\n ").endswith("throw ($problems -join ' ')"), check)
+                # A volume without NTFS/ReFS permissions is a problem for Install, not a pass.
+                self.assertRegex(check, r"if \(\$drive\.DriveFormat -notin @\('NTFS', 'ReFS'\)\) \{\n\s+\$problems\.Add\(")
+
+    def test_kill_switch_remove_reports_rules_left_in_its_group(self):
+        body = _main_body(_read_script("Manage-WindowsKillSwitch.ps1"))
+        remove = _block(body, "    if ($Action -eq 'Remove') {", "    } else {")
+        self.assertIn("$removed = @(Remove-OwnedRules $KnownNames)", remove)
+        self.assertIn("$remaining = @($status.ForeignOrUnexpectedRules)", remove)
+        left = _block(remove, "        if ($remaining.Count) {", "        } else {")
+        self.assertIn("Status         = 'removed-other-rules-remain'", left)
+        self.assertIn("RemainingRules = $remaining", left)
+        self.assertIn("$exitCode = 2", left)
+        self.assertTrue(body.rstrip().endswith("exit $exitCode"))
+
+    def test_lan_dns_guard_install_never_deletes_rules_it_did_not_add(self):
+        body = _main_body(_read_script("Manage-WindowsLanDnsGuard.ps1"))
+        remove = _block(body, "    if ($Action -eq 'Remove') {", "    } else {")
+        install = _block(body, "    } else {", "} catch {")
+        rollback = _block(body, "} catch {", "} finally {")
+        self.assertIn("$removed = @(Remove-OwnedRules -Names $KnownNames)", remove)
+        self.assertEqual(body.count("Remove-OwnedRules"), 2, "only Remove and the rollback may delete rules")
+        self.assertIn("[void](Remove-OwnedRules -Names $created)", rollback)
+        self.assertNotIn("Remove-OwnedRules", install)
+        self.assertNotIn("Remove-NetFirewallRule", install)
+        # Earlier rules: same plan gives already-installed, anything else is refused untouched.
+        existing = _block(install, "        if ($persisted.Count -or $active.Count) {", "        } else {")
+        self.assertIn("throw 'Nothing was changed: LAN DNS Guard rules are already installed but differ", existing)
+        self.assertIn("Status         = 'already-installed'", existing)
+        # New rules: recorded before each is created (so a failure rolls them back), staged
+        # disabled, read back, then enabled together.
+        staged = install.split("        } else {", 1)[1]
+        order = ["$created += $entry.Name", "New-NetFirewallRule -PolicyStore PersistentStore", "-Enabled False",
+                 "if (-not (Test-RulesMatch @(Get-PolicySet 'PersistentStore') $plan $false)) {",
+                 "Enable-NetFirewallRule -PolicyStore PersistentStore -Name $created"]
+        positions = [staged.find(item) for item in order]
+        self.assertNotIn(-1, positions, dict(zip(order, positions)))
+        self.assertEqual(positions, sorted(positions))
+        left = _block(remove, "        if ($remaining.Count) {", "        }")
+        self.assertIn("$exitCode = 2", left)
+        self.assertIn("Status         = if ($remaining.Count) { 'removed-other-rules-remain' } else { 'removed' }", remove)
+
+    def test_status_and_preview_exit_codes(self):
+        ks = _main_body(_read_script("Manage-WindowsKillSwitch.ps1"))
+        lan = _main_body(_read_script("Manage-WindowsLanDnsGuard.ps1"))
+        for label, body, mismatch in (("kill switch", ks, "if ($status.ConfigurationMatched -eq $false) { exit 2 }"),
+                                      ("LAN DNS Guard", lan, "if ($matched -eq $false) { exit 2 }")):
+            with self.subTest(script=label):
+                status = _block(body, "if ($Action -eq 'Status') {", "}")
+                preview = _block(body, "if ($Action -eq 'Preview') {", "}")
+                self.assertEqual(status.rstrip().splitlines()[-2:], ["    " + mismatch, "    exit 0"])
+                # exit, not return: "& .\script.ps1 ...; $LASTEXITCODE" shows the code only after exit.
+                self.assertEqual(preview.rstrip().splitlines()[-1], "    exit 0")
+                self.assertIsNone(re.search(r"^\s*return\b", body, re.M), "top-level return leaves $LASTEXITCODE unset")
+
+    def test_dhcp_message_offers_a_way_out_that_works_with_all_physical_adapters(self):
+        message = _function_source(_read_script("Manage-WindowsKillSwitch.ps1"), "Format-DhcpProblem")
+        # With -IncludeAllPhysicalAdapters the adapter was not named, so "leave it out of
+        # -InterfaceAlias" is not something the user can do.
+        self.assertNotIn("leave it out of -InterfaceAlias", message)
+        self.assertIn("select the adapters with -InterfaceAlias without it (instead of -IncludeAllPhysicalAdapters)", message)
+        doc = (SCRIPTS / "WINDOWS-KILL-SWITCH.md").read_text(encoding="utf-8")
+        self.assertIn("或者改用 `-InterfaceAlias` 不选它", doc)
+
+    def test_proxy_state_probe_uses_the_narrowed_family(self):
+        text = _read_script("Test-ProxyState.ps1")
+        body = _main_body(text)
+        self.assertIn("$probeFamily = [string]$familyDecision.Effective", body)
+        calls = re.findall(r"Invoke-HTTPSProbe\b[^\n]*", body)
+        self.assertEqual(calls, ["Invoke-HTTPSProbe -Url $target.Url -Family $probeFamily"])
+        probe = _function_source(text, "Invoke-HTTPSProbe")
+        self.assertIn("'ipv4' { '--ipv4 ' }", probe)
+        self.assertIn("'ipv6' { '--ipv6 ' }", probe)
+        self.assertIn("$familyOption + '-- \"' + $Url.AbsoluteUri + '\"'", probe)
+
+    def test_proxy_state_never_counts_a_named_physical_adapter_as_a_tunnel(self):
+        text = _read_script("Test-ProxyState.ps1")
+        select = _function_source(text, "Select-NamedTunnelAdapter")
+        # The physical check comes before the Up check, and only the last branch adds tunnels.
+        physical = select.find("} elseif (@($found | Where-Object { $_.HardwareInterface -eq $true }).Count) {\n            $physical += $item")
+        up = select.find("Where-Object { [string]$_.Status -eq 'Up' }).Count -eq 0")
+        self.assertGreater(physical, 0)
+        self.assertGreater(up, physical)
+        self.assertEqual(select.count("$tunnel +="), 1)
+        self.assertGreater(select.find("$tunnel +="), up)
+        body = _main_body(text)
+        self.assertIn("$namedSelection = Select-NamedTunnelAdapter -Adapter $adapterList -Name $TunnelInterfaceAlias", body)
+        self.assertIn("$tunnelAdapters = @($namedSelection.Tunnel)", body)
+        preflight = _block(body, "        if ($preflightStage) {", "        } else {")
+        self.assertIn("            if ($namedProblem -and -not $AllowDirectWithoutTun) {\n                throw", preflight)
+        self.assertIn("$tunnelFamilies = @(Get-TunnelRouteFamily -TunnelAdapter $tunnelAdapters)", body)
+
+    def test_proxy_state_fake_ip_ranges_are_the_kits(self):
+        import ipaddress
+        import refresh_allowlists
+        text = _read_script("Test-ProxyState.ps1")
+        self.assertEqual([str(n) for n in refresh_allowlists.FAKE_NETWORKS], ["198.18.0.0/15", "fc00::/18"])
+        fake = _function_source(text, "Test-FakeIpAddress")
+        self.assertIn("return ($b[0] -eq 198 -and ($b[1] -band 0xFE) -eq 18)", fake)
+        self.assertIn("return ($b[0] -eq 0xFC -and $b[1] -eq 0 -and ($b[2] -band 0xC0) -eq 0)", fake)
+        # The byte tests above, done the same way in Python, agree with the networks.
+        for sample in FAKE_IP_SAMPLES:
+            try:
+                ip = ipaddress.ip_address(sample)
+            except ValueError:
+                continue
+            b = ip.packed
+            by_bytes = (b[0] == 198 and (b[1] & 0xFE) == 18) if ip.version == 4 else (
+                b[0] == 0xFC and b[1] == 0 and (b[2] & 0xC0) == 0)
+            self.assertEqual(by_bytes, any(ip in n for n in refresh_allowlists.FAKE_NETWORKS), sample)
+        body = _main_body(text)
+        self.assertIn("$fakeIpOnly = $Stage -in @('tun-down', 'client-down') -and $dnsState.FakeIpOnly", body)
+        self.assertIn("$verdict = if ($fakeIpOnly) { 'inconclusive' } else { 'observed' }", body)
+
+    def test_proxy_inventory_keeps_only_whole_client_folder_names(self):
+        text = _read_script("Inspect-WindowsProxy.ps1")
+        pattern = _ps_single_quoted(text, "clientFolderPattern")
+        protect = _function_source(text, "Protect-LocalPath")
+        self.assertIn("if ($clientNames.ContainsKey($parent) -or $parent -match $clientFolderPattern) {", protect)
+        self.assertIn('return "$label\\...\\$($parts[-1])"', protect)
+        self.assertNotIn("installedNamePattern", protect)
+        for name in ("v2rayN", "V2RAYN", "Clash Verge", "Clash Verge Rev", "v2rayN 7.2.1", "Tailscale", "FlClash v0.8"):
+            self.assertTrue(_client_folder_match(pattern, name), name)
+        for name in ("v2rayN 张三公司专用", "Clash Verge 李四", "Tailscale 王五的电脑", "v2rayN-windows-64",
+                     "v2rayN 7 张三", "张三 v2rayN", "v2rayN\u00a07.2", "v2rayN_backup"):
+            self.assertFalse(_client_folder_match(pattern, name), name)
+
+    def test_firewall_inventory_classifies_by_rule_group(self):
+        text = _read_script("Inspect-WindowsFirewall.ps1")
+        classify = _function_source(text, "Test-MicrosoftRuleGroup")
+        patterns = [_ps_single_quoted(classify, name) for name in ("resourcePattern", "packagePattern", "groupNamePattern")]
+        self.assertEqual(classify.rstrip("}\n ").splitlines()[-1].strip(),
+                         "($Group -match $resourcePattern) -or ($Group -match $packagePattern) -or ($Group -match $groupNamePattern)")
+        for group, expected in RULE_GROUP_CASES:
+            with self.subTest(group=group):
+                self.assertEqual(any(re.search(p, group) for p in patterns), expected)
+        loop = _main_body(text)
+        self.assertEqual(loop.count("Test-MicrosoftRuleGroup ([string]$rule.Group)"), 1)
+        self.assertEqual(loop.count("$allowBreakdown.BuiltInOrMicrosoft += 1"), 1)
+        self.assertNotIn("$nameText -match '(?i)(?:Microsoft", loop)
 
 
 @unittest.skipUnless(os.name == "nt", "Requires Windows PowerShell")
@@ -372,6 +644,104 @@ ConvertTo-Json -InputObject $decisions -Compress
         self.assertEqual(result.returncode, 0, result.stderr)
         got = [(item["Effective"], item["Detected"]) for item in json.loads(result.stdout)]
         self.assertEqual(got, [expected for _, expected in FAMILY_CASES])
+
+    def test_proxy_state_named_tunnel_adapters_exclude_physical_ones(self):
+        cases = [{"Names": names} for names, _ in NAMED_TUNNEL_CASES]
+        command = (
+            UTF8_OUTPUT
+            + _extract_function_command("Test-ProxyState.ps1", "Select-NamedTunnelAdapter")
+            + _extract_function_command("Test-ProxyState.ps1", "Format-NamedTunnelProblem")
+            + "$adapters = ConvertFrom-Json '" + json.dumps(TUNNEL_ADAPTERS, ensure_ascii=True) + "'\n"
+            + "$cases = ConvertFrom-Json '" + json.dumps(cases, ensure_ascii=True) + "'\n"
+            + """$out = @(foreach ($case in $cases) {
+    $selection = Select-NamedTunnelAdapter -Adapter @($adapters) -Name ([string[]]@($case.Names))
+    [pscustomobject]@{
+        Tunnel = @($selection.Tunnel | ForEach-Object { [int]$_.ifIndex })
+        Missing = @($selection.Missing); NotUp = @($selection.NotUp); Physical = @($selection.Physical)
+        Message = [string](Format-NamedTunnelProblem $selection)
+        PhysicalOnly = [string](Format-NamedTunnelProblem $selection -PhysicalOnly)
+    }
+})
+ConvertTo-Json -InputObject $out -Depth 4 -Compress
+"""
+        )
+        result = self.run_powershell(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for (names, expected), item in zip(NAMED_TUNNEL_CASES, json.loads(result.stdout)):
+            with self.subTest(names=names):
+                got = tuple(_as_list(item[key]) for key in ("Tunnel", "Missing", "NotUp", "Physical"))
+                self.assertEqual(got, expected)
+                tunnels, missing, not_up, physical = expected
+                if physical:
+                    self.assertIn("physical adapter", item["Message"])
+                    self.assertIn("physical adapter", item["PhysicalOnly"])
+                for name in missing + not_up:
+                    self.assertIn(f"'{name}'", item["Message"])
+                    self.assertNotIn(f"'{name}'", item["PhysicalOnly"])
+                if not (missing or not_up or physical):
+                    self.assertEqual(item["Message"], "")
+
+    def test_proxy_state_fake_ip_cache_makes_no_connection_inconclusive(self):
+        import ipaddress
+        import refresh_allowlists
+        command = (
+            UTF8_OUTPUT
+            + _extract_function_command("Test-ProxyState.ps1", "Test-FakeIpAddress")
+            + _extract_function_command("Test-ProxyState.ps1", "Test-FakeIpOnlyCache")
+            + "$samples = ConvertFrom-Json '" + json.dumps(FAKE_IP_SAMPLES) + "'\n"
+            + "$caches = ConvertFrom-Json '" + json.dumps([{"Entries": e} for e, _ in FAKE_IP_CACHE_CASES]) + "'\n"
+            + """$out = [pscustomobject]@{
+    Addresses = @(foreach ($sample in $samples) { [bool](Test-FakeIpAddress ([string]$sample)) })
+    Caches = @(foreach ($cache in $caches) { [bool](Test-FakeIpOnlyCache -Entry @($cache.Entries)) })
+}
+ConvertTo-Json -InputObject $out -Compress
+"""
+        )
+        result = self.run_powershell(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        got = json.loads(result.stdout)
+
+        def expected_fake(sample):
+            try:
+                ip = ipaddress.ip_address(sample)
+            except ValueError:
+                return False
+            return any(ip in network for network in refresh_allowlists.FAKE_NETWORKS)
+
+        self.assertEqual(_as_list(got["Addresses"]), [expected_fake(s) for s in FAKE_IP_SAMPLES])
+        self.assertEqual(_as_list(got["Caches"]), [expected for _, expected in FAKE_IP_CACHE_CASES])
+
+    def test_firewall_rule_group_classification(self):
+        groups = [group for group, _ in RULE_GROUP_CASES]
+        command = (
+            UTF8_OUTPUT
+            + _extract_function_command("Inspect-WindowsFirewall.ps1", "Test-MicrosoftRuleGroup")
+            + "$groups = ConvertFrom-Json '" + json.dumps(groups).replace("'", "''") + "'\n"
+            + "ConvertTo-Json -InputObject @(foreach ($g in $groups) { [bool](Test-MicrosoftRuleGroup ([string]$g)) }) -Compress\n"
+        )
+        result = self.run_powershell(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_as_list(json.loads(result.stdout)), [expected for _, expected in RULE_GROUP_CASES])
+
+    def test_proxy_inventory_path_masking(self):
+        text = _read_script("Inspect-WindowsProxy.ps1")
+        client_names = dict(re.findall(r"^    '([^']+)'\s+= '([^']+)'$", text, re.M))
+        self.assertIn("v2rayn", client_names)
+        command = (
+            UTF8_OUTPUT
+            + _extract_function_command("Inspect-WindowsProxy.ps1", "Protect-LocalPath")
+            + "$clientFolderPattern = '" + _ps_single_quoted(text, "clientFolderPattern").replace("'", "''") + "'\n"
+            + "$clientNames = New-Object 'System.Collections.Hashtable' ([System.StringComparer]::OrdinalIgnoreCase)\n"
+            + "foreach ($p in (ConvertFrom-Json '" + json.dumps(client_names, ensure_ascii=True) + "').PSObject.Properties) { $clientNames[$p.Name] = $p.Value }\n"
+            + "$pathsToMask = [ordered]@{}\n"
+            + "$folders = ConvertFrom-Json '" + json.dumps([{"Path": a, "Label": b} for a, b in PROFILE_FOLDERS], ensure_ascii=True) + "'\n"
+            + "foreach ($p in $folders) { $pathsToMask[[string]$p.Path] = [string]$p.Label }\n"
+            + "$paths = ConvertFrom-Json '" + json.dumps([path for path, _ in MASK_CASES], ensure_ascii=True) + "'\n"
+            + "ConvertTo-Json -InputObject @(foreach ($path in $paths) { [string](Protect-LocalPath ([string]$path)) }) -Compress\n"
+        )
+        result = self.run_powershell(command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(_as_list(json.loads(result.stdout)), [expected for _, expected in MASK_CASES])
 
     def test_offline_page_preview_command_runs_and_matches_python(self):
         node = shutil.which("node")

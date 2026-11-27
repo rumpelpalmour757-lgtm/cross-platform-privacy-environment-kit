@@ -2,7 +2,7 @@
 
 ## 未发布：Windows 脚本修复（还没有在 Windows 真机上跑过）
 
-> 这一节的 `.ps1` 改动只在 CI 的 windows-latest 上做过语法解析、`Preview` 对账和几个纯函数的单测，`Install`、`Remove`、`Status` 和断线演练没有在 Windows 上运行过。要等在真机上照 `WINDOWS-KILL-SWITCH.md` 跑过 `Preview`、`Install`、`Status`、断线演练、`Remove` 以后再发版。
+> 这一节的 `.ps1` 改动没有在 Windows 上运行过。CI 在 windows-latest 上对它们只做语法解析、`Preview` 对账和几个纯函数的单测（是否通过以 PR 上的 CI 结果为准），`Install`、`Remove`、`Status` 和断线演练要在真机上跑。要等在真机上照 `WINDOWS-KILL-SWITCH.md` 跑过 `Preview`、`Install`、`Status`、断线演练、`Remove` 以后再发版。
 
 ### 断网开关和 LAN DNS Guard（`Manage-WindowsKillSwitch.ps1`、`Manage-WindowsLanDnsGuard.ps1`）
 
@@ -14,23 +14,27 @@
 - LAN DNS Guard 和断网开关对齐：加全局互斥锁；检查防火墙配置文件的 `DisabledInterfaceAliases`；`Status` 带了网卡参数、规则对不上时退出码 2（以前总是 0），输出加 `ForeignOrUnexpectedRules`；`-LogDirectory` 要求绝对路径。
 - 网卡名的规则和 Python 规划器对齐：拒绝不间断空格、零宽字符、行分隔符、私用区字符等不可见字符（以前断网开关只拒 ASCII 控制字符）；断网开关 `-InterfaceAlias` 里有不分大小写的重复时报错（以前悄悄去重）；排序改成按小写后的序数比较（以前跟随系统区域设置，中文系统上按拼音排，`Preview` 的 `InterfaceAliases` 顺序会和 Python 不同；规则内容不受影响）。报错里写出是哪个名字，不可见字符写成 `\uXXXX`。
 - 断网开关 `-IncludeAllPhysicalAdapters` 改用和核对网卡同一个口径（`HardwareInterface` 为 `True`），不再一处用 `Get-NetAdapter -Physical`、一处用 `HardwareInterface`。
-- 断网开关的 DHCP 检查：读不到 IPv4 设置的网卡（被禁用、没绑 IPv4）按“可能开着 DHCP”处理，`Install` 要求 `-DhcpServer`（以前当作没开，启用这张网卡以后续租会被拦）；报错里列出网卡名。上游和 DHCP 服务器同址的报错补一句改用静态 IP。已有不同规则时的报错写明先 `Remove` 再 `Install`。
+- 断网开关的 DHCP 检查：读不到 IPv4 设置的网卡（被禁用、没绑 IPv4）按“可能开着 DHCP”处理，`Install` 要求 `-DhcpServer`（以前当作没开，启用这张网卡以后续租会被拦）；报错里列出网卡名，出路写的是“改用 `-InterfaceAlias` 列出网卡、不选它”（用 `-IncludeAllPhysicalAdapters` 时没法“从 `-InterfaceAlias` 里去掉”）。上游和 DHCP 服务器同址的报错补一句改用静态 IP。已有不同规则时的报错写明先 `Remove` 再 `Install`。
 - 断网开关 `Install`、`Status` 发现处于连接状态的非隧道虚拟网卡时，在标准错误里打印警告。
+- 断网开关的 `Preview` 和 `Status`（规则对得上或不带参数时）以 `exit 0` 结束（以前是 `return`，在同一个窗口里 `& .\Manage-WindowsKillSwitch.ps1 …; $LASTEXITCODE` 显示的是上一条命令留下的值），和 LAN DNS Guard 一致。
 
 ### `Test-ProxyState.ps1`
 
 - **默认 `-AddressFamily auto` 不再把两个地址族混在一起预检**：`normal`、`upstream-unreachable` 阶段只测隧道网卡上有默认路由的地址族，TUN 只接管 IPv4 时只发 IPv4 请求，物理网卡上的原生 IPv6 路由碰不到这次探测。显式给 `ipv4`、`ipv6` 时要求隧道有这一族的默认路由。输出加 `TunnelRouteFamilies`、`RequestedAddressFamily`、`ProbedAddressFamily`、`TunnelDetection`，每个探测的 `AddressFamily` 是实际测的那一族；`Coverage` 写明不比较跃点数。
-- 新增 `-TunnelInterfaceAlias`：客户端的隧道网卡名字认不出时，用它指明哪张是隧道网卡，不必用 `-AllowDirectWithoutTun`。
+- 新增 `-TunnelInterfaceAlias`：客户端的隧道网卡名字认不出时，用它指明哪张是隧道网卡，不必用 `-AllowDirectWithoutTun`。只认虚拟网卡：`HardwareInterface` 为 `True` 的物理网卡（Wi-Fi、以太网）不算隧道，否则填错一张物理网卡，预检就会放行、用真实 IP 直连探测站点。`normal`、`upstream-unreachable` 阶段填了物理网卡、不存在的名字或没连上的网卡时报错，写出是哪个名字，不发包；确实要直连时同时给 `-AllowDirectWithoutTun`（这时只打印警告）。
+- `tun-down`、`client-down` 阶段：系统 DNS 缓存里探测域名只有 fake-ip 地址（`198.18.0.0/15`、`fc00::/18`，和 `refresh_allowlists.py` 同一套网段）时，连不上记为 `inconclusive`，不再记为 `observed`：关掉 TUN 以后这种地址装不装断网开关都连不上，说明不了断网开关拦住了什么。每个探测多一个字段 `DnsCacheFakeIpOnly`；读不到缓存里的地址时它是 `false`，按以前的办法判。
 
 ### 只读体检（`Inspect-WindowsProxy.ps1`、`Inspect-WindowsFirewall.ps1`）
 
-- `Inspect-WindowsProxy.ps1` 遮盖路径：用户目录（含 AppData）下只保留最后一段和已知客户端名的上一级目录，其余目录名一律遮盖（以前会原样输出可执行文件的上一级目录名，路径只有两段时整段保留）。
-- `Inspect-WindowsFirewall.ps1` 的“系统或微软自带”只看规则组（Windows 资源串、`@{Microsoft.*}` 包、以 Microsoft、Windows、Core Networking 开头的组），不再在名字里找 Windows、Office、Edge 这类词（以前 “Clash for Windows”“WPS Office” 也被算成微软自带）。`EvidenceLimits` 写明 `MsixClaudeOutboundAllowCount`、`LanDnsPort53OutboundBlockCount` 实际数的是什么。字段名没有改。
+- `Inspect-WindowsProxy.ps1` 遮盖路径：用户目录（含 AppData）下只保留最后一段，上一级目录只在整段就是已知客户端名（进程名，或者产品名后面可以跟一个版本号，例如 `v2rayN 7.2.1`）时保留，其余目录名一律遮盖（以前会原样输出可执行文件的上一级目录名，路径只有两段时整段保留）。“客户端名 + 空格 + 别的字”的目录名（例如带人名、公司名）也遮盖。
+- `Inspect-WindowsFirewall.ps1` 的“系统或微软自带”只看规则组（Windows 资源串、`@{Microsoft.*}` 包、以 Microsoft、Windows、Core Networking 开头的组），不再在名字里找 Windows、Office、Edge 这类词（以前 “Clash for Windows”“WPS Office” 也被算成微软自带）。打包应用的规则组按包名里的发布者 ID 认：带 Microsoft（`8wekyb3d8bbwe`）或 Windows（`cw5n1h2txyewy`）发布者 ID 的算微软自带，包名不以 `Microsoft.` 开头的系统应用（例如 `MicrosoftWindows.Client.CBS`、`windows.immersivecontrolpanel`、`MSTeams`）也认得出。判断抽成了函数 `Test-MicrosoftRuleGroup`。`EvidenceLimits` 写明 `MsixClaudeOutboundAllowCount`、`LanDnsPort53OutboundBlockCount` 实际数的是什么。字段名没有改。
 
 ### 文档、离线网页和测试
 
+- 断网开关文档的示例参数里，端口、协议改成和上游地址一样的尖括号占位符（以前写死 `443`、`'TCP'`，照抄时节点不是 443/TCP 就会装完断网），并写明装之前在客户端里要确认的几件事（节点写 IPv4、固定用一个节点、全局代理）；`fake-ip` 时断线演练测不出断网开关，写进「断线演练」。OneDrive 接管的文件夹带重解析点属性这一点注明没有实测，「已知问题」里不再说“一律拒绝”；README 里“不要放在 U 盘上”改成按文件系统说（NTFS 的 U 盘检查拦不住，查的是 FAT32、exFAT）。
 - `WINDOWS-KILL-SWITCH.md`、README、离线网页照新的行为改写：放置位置、`Remove` 的两种输出和还剩规则时怎样处理、LAN DNS Guard 换网卡要先 `Remove`、两个 `Status` 的退出码、`Test-ProxyState.ps1` 的地址族和 `-TunnelInterfaceAlias`、查看物理网卡的命令；「已知问题」只留还没修的。
 - `test_kill_switch_powershell.py`：新增所有平台都跑的源码检查（没有 BOM 的 `.ps1` 必须是纯 ASCII；两个管理脚本的共用函数逐字相同；权限掩码的算术；规则名和描述与 Python 规划器、文档里的手工撤销命令一致；三处隧道网卡正则相同），以及只在 Windows 上跑的用例：用合成的权限项测 `Get-SharedWriteGrant`，带中文、空格、不可见字符和重复的网卡名对照 Python 规划器，`Test-ProxyState.ps1` 的地址族选择，真的执行离线网页生成的 `Preview` 命令（只取 `Preview` 以前的部分）。
+- 所有平台都跑的源码检查又加了几项，钉住没有用例能跑到的安全相关流程，改回 v0.4.2 的写法就会变红：两个管理脚本的 `Remove` 只把位置检查当警告、日志写不进去也继续，非 NTFS/ReFS 卷是 `Install` 的问题而不是放行；断网开关 `Remove` 同组还剩规则时报 `removed-other-rules-remain`、退出码 2；LAN DNS Guard `Install` 不删任何不是这次加的规则，先记名再建、建成禁用、读回核对、再启用；两个脚本 `Preview`、`Status` 的退出码；`Test-ProxyState.ps1` 把收窄后的地址族传给 curl、点名的物理网卡不算隧道、fake-ip 网段和 `refresh_allowlists.py` 一致；`Inspect-WindowsProxy.ps1` 的目录名规则（用 Python 照同一个正则试中文目录名）和 `Inspect-WindowsFirewall.ps1` 的规则组分类（同上）。只在 Windows 上跑的用例另加四个：隧道网卡挑选、fake-ip 判断、规则组分类、路径遮盖，都是把函数从脚本里取出来用合成输入跑。
 
 ### 没有改的
 

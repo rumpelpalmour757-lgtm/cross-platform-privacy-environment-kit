@@ -3,7 +3,7 @@
 本工具在指定物理网卡上创建持久化的 Windows Defender 防火墙出站阻断规则。代理客户端或 TUN 退出后，规则仍由 Windows 防火墙服务执行。
 
 > **安全加固说明**：
-> - `Manage-WindowsKillSwitch.ps1` 现已完全采用原生 PowerShell 计算规则，**不再在管理员权限下调用外部 `py.exe` 或外部 Python 脚本**。`Install` 前检查脚本所在目录和脚本文件本身：普通共享用户组（Everyone、Users、Authenticated Users、Guests、INTERACTIVE）有改动类权限（写入、追加、删除、改权限、取得所有权）就拒绝，只读和执行不算。所以放在个人主目录下的子文件夹（例如 `%USERPROFILE%\cppek-kit`）或 `C:\Program Files` 下的子文件夹都可以；放在 `D:\` 这类数据盘根目录下新建的文件夹通常不行（默认给 Authenticated Users 修改权限）。这几种位置的结果是按 Windows 的默认权限推断的，没有在真机上逐一试过。被拒时报错会写出是哪个路径、哪个用户组、什么权限。上级目录里有符号链接、目录联接或被 OneDrive 接管的文件夹（带重解析点属性）时，报错会写出是哪一级目录；FAT32、exFAT（常见于 U 盘）这类没有文件权限的卷，`Install` 也拒绝。LAN DNS Guard 的检查和这里相同。
+> - `Manage-WindowsKillSwitch.ps1` 现已完全采用原生 PowerShell 计算规则，**不再在管理员权限下调用外部 `py.exe` 或外部 Python 脚本**。`Install` 前检查脚本所在目录和脚本文件本身：普通共享用户组（Everyone、Users、Authenticated Users、Guests、INTERACTIVE）有改动类权限（写入、追加、删除、改权限、取得所有权）就拒绝，只读和执行不算。所以放在个人主目录下的子文件夹（例如 `%USERPROFILE%\cppek-kit`）或 `C:\Program Files` 下的子文件夹都可以；放在 `D:\` 这类数据盘根目录下新建的文件夹通常不行（默认给 Authenticated Users 修改权限）。这几种位置的结果是按 Windows 的默认权限推断的，没有在真机上逐一试过。被拒时报错会写出是哪个路径、哪个用户组、什么权限。上级目录里有符号链接、目录联接（带重解析点属性），或者被 OneDrive 接管的文件夹（通常也带这个属性，没有实测）时，报错会写出是哪一级目录；FAT32、exFAT（常见于 U 盘）这类没有文件权限的卷，`Install` 也拒绝。LAN DNS Guard 的检查和这里相同。
 > - `Remove` 对上面这些位置问题只在窗口里打印 `WARNING:`，照样删除规则：脚本被改过的话这项检查本身也已经不在了，拦下 `Remove` 只会让网络一直断着。日志目录不可用时，`Remove` 打印一行警告后不写日志继续；`Install` 仍然要求日志写得进去。
 > - 默认要求覆盖**所有当前处于连接（Up）状态的物理网卡**（推荐直接使用 `-IncludeAllPhysicalAdapters` 把机器上所有有线/无线物理网卡一次全部纳入），防止漏掉第二张活动网卡。新增 USB 共享网络或扩展坞网卡后，要先 `-Action Remove` 再用新参数 `-Action Install`，见下文[更新保护范围](#更新保护范围新网卡新上游)。
 > - **虚拟网卡选不进保护范围，不保证覆盖。** `-IncludeAllPhysicalAdapters` 只取物理网卡（`HardwareInterface` 为 `True` 的网卡，脚本里挑网卡、核对网卡、查覆盖都按这一个口径）；用 `-InterfaceAlias` 指定虚拟网卡（例如 Hyper-V 虚拟交换机的 `vEthernet` 网卡）会报 `The selected physical adapter could not be identified`。处于连接状态的非隧道虚拟网卡会列在 `Install`、`Status` 输出的 `Prerequisites.ActiveVirtualNonTunnelAdapters` 里，同时在窗口里打印一行 `WARNING: Connected virtual adapters are outside this guard: …`；`ConfigurationMatched` 照样是 `true`，这一项不为空时不要当作已受保护。建了 Hyper-V 外部虚拟交换机以后主机流量会改从 `vEthernet` 网卡出去，这时只绑物理网卡名的规则还拦不拦得住，没有实测；WSL2、虚拟机 NAT、移动热点共享这类由主机转发的流量是否经过这些规则，也没有实测。
@@ -41,11 +41,14 @@ Get-NetAdapter -IncludeHidden | Where-Object HardwareInterface | Select-Object N
 $settings = @{
     IncludeAllPhysicalAdapters = $true
     UpstreamAddress            = '<固定上游 IPv4>'
-    UpstreamPort               = 443
-    UpstreamProtocol           = 'TCP'
+    UpstreamPort               = <节点端口>
+    UpstreamProtocol           = '<TCP 或 UDP>'
 }
 & .\Manage-WindowsKillSwitch.ps1 -Action Preview @settings
 ```
+
+- 尖括号里的三项都照客户端里**这个节点**的设置填：端口不一定是 443；走 UDP 的节点（例如 Hysteria2、TUIC）写 `'UDP'`。脚本不检查代理实际连的是哪个端口、哪种协议：填错了 `Install` 照样成功，但代理连不上上游，整机断网，要先 `Remove` 再用对的参数装。尖括号没换掉时 PowerShell 直接报错，什么都不会执行。
+- 装之前在客户端里确认三件事，不满足就先不要装：这个节点写的是这个 IPv4（不是域名，见上文副作用）；关掉自动选择、负载均衡、故障转移，固定用这一个节点（换到别的节点就连不上）；路由是全局代理（直连分流会被拦）。
 
 - **电脑通过 DHCP 自动获取 IP 时（家用路由器、热点基本都是），必须加 DHCP 例外**：在预览前加入 `$settings['DhcpServer'] = '<DHCP 服务器的私有 IPv4>'`，仅放行本机 68 端口至该地址及广播地址 67 端口的 UDP 续租包（只要给了任意一个 `-DhcpServer`，发往广播地址 `255.255.255.255` 的续租就会放行）。不加的话续租会被拦，租约到期后可能突然断网。DHCP 服务器地址可用 `Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object DHCPEnabled | Select-Object Description, DHCPServer` 或 `ipconfig /all` 查到。从 v0.3.8 起，检测到所选网卡启用 DHCP 却没给 `DhcpServer` 时，`Preview` 会提示，`Install` 会直接拒绝安装，报错里列出是哪几张网卡。检测看的是所有选中的网卡，包括没插线的网口：平时用静态 IP、但没插线的网口默认开着 DHCP 时，也会被要求给 `-DhcpServer`。读不到 IPv4 设置的网卡（被禁用的网卡、没有绑定 IPv4 的网卡）按“可能开着 DHCP”处理，同样要求 `-DhcpServer`：以后启用它时续租会被拦。不想给的话，先启用它再 `Preview` 看一次，或者改用 `-InterfaceAlias` 不选它。
 - `-DhcpServer` 只接受 RFC 1918 私网地址（`10.x`、`172.16-31.x`、`192.168.x`）。DHCP 服务器是公网地址或 `100.64.0.0/10` 地址的网络（部分校园网、光猫桥接）目前装不了。
@@ -157,9 +160,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-ProxyState.ps1 -S
 - 没检测到 TUN 默认路由时，`normal`、`upstream-unreachable` 默认拒绝发包；`-AllowDirectWithoutTun` 跳过这项检查，等于有意用真实 IP 直连，只在明白后果时用。
 - 预检按地址族分开看。`-AddressFamily` 默认是 `auto`：在 `normal`、`upstream-unreachable` 阶段，只测隧道网卡上有默认路由的那几个地址族。TUN 只接管 IPv4 时只发 IPv4 请求（`curl --ipv4`），物理网卡上的原生 IPv6 路由碰不到这次探测；IPv4、IPv6 都接管时两个都不限定。输出里的 `TunnelRouteFamilies` 是检测到的地址族，`ProbedAddressFamily` 是这次实际测的。`tun-down`、`client-down` 阶段不做预检，`auto` 不限定地址族，两种直连都算进结果。显式给 `-AddressFamily ipv4` 或 `ipv6` 时只测这一个，隧道没有它的默认路由就拒绝。
 - 预检只看隧道网卡上有没有默认路由（`0.0.0.0/0`、`0.0.0.0/1`、`128.0.0.0/1`，IPv6 的 `::/0`、`::/1`、`8000::/1`、`2000::/3`），不比较路由的跃点数，也不看别的网卡上有没有更具体的路由。
-- 隧道网卡按名字认（`tun`、`wintun`、`wireguard`、`tailscale`、`sing-box`、`mihomo`、`clash` 等）。客户端的虚拟网卡叫别的名字时，`normal` 会因为“没检测到隧道”被拒；这时用 `-TunnelInterfaceAlias '<网卡名>'` 指明哪张是隧道网卡（`Get-NetAdapter -IncludeHidden` 里的 `Name`），不要用 `-AllowDirectWithoutTun` 代替。
+- 隧道网卡按名字认（`tun`、`wintun`、`wireguard`、`tailscale`、`sing-box`、`mihomo`、`clash` 等）。客户端的虚拟网卡叫别的名字时，`normal` 会因为“没检测到隧道”被拒；这时用 `-TunnelInterfaceAlias '<网卡名>'` 指明哪张是隧道网卡（`Get-NetAdapter -IncludeHidden` 里的 `Name`），不要用 `-AllowDirectWithoutTun` 代替。只填客户端为 TUN 建的虚拟网卡，不要填 Wi-Fi、以太网：`HardwareInterface` 为 `True` 的网卡（物理网卡）不算隧道，上面的默认路由直接从物理网卡出去，探测站点会看到真实 IP。在 `normal`、`upstream-unreachable` 阶段，填了物理网卡、填的名字不存在或网卡没连上（不是 `Up`），脚本都先报错、不发包，报错里写出是哪个名字；确实要用真实 IP 直连测试时才同时加 `-AllowDirectWithoutTun`（这时这些名字只打印警告，照样不算隧道）。`tun-down`、`client-down` 阶段隧道网卡本来就该消失，名字找不到不报错，填了物理网卡只打印警告。常见的隧道驱动（Wintun、TAP-Windows6）按驱动源码注册的是没有物理连接器的虚拟网卡，按理 `HardwareInterface` 不是 `True`、不会被误拒；这一点没有在 Windows 上核对过，真被拒时请告诉我们网卡的 `InterfaceDescription`。
 - 怎么读结果：每个探测的 `Verdict` 是 `observed`（符合预期）、`not-observed`（期望能连上却没连上）、`unexpected-connectivity`（期望断开却连上了，可能回落了直连）或 `inconclusive`。总的 `ObservationsMatchStage` 为 `true` 才算这一阶段符合预期。
 - 断网开关正常工作时，`tun-down`、`client-down` 常见的结果是 `inconclusive`、`Observation` 为 `name-resolution-failed`（curl 退出码 6）：断网开关把物理网卡上发往任何地址的 53 端口也拦了，系统解析不了探测站点的域名，这次没测到连接这一层。想测到连接层，先在隧道正常时跑一次 `normal`，让域名进系统 DNS 缓存（输出里的 `DnsCachedBeforeProbe` 会是 `true`），再马上做断线阶段；缓存过期后又会回到 `inconclusive`。
+- **TUN 用 fake-ip 时，缓存里的是假地址，`observed` 说明不了断网开关。** fake-ip 模式下系统 DNS 缓存存的是客户端给的 `198.18.0.0/15`（IPv6 是 `fc00::/18`）里的地址；关掉 TUN 以后，这个地址装不装断网开关都连不上，curl 一样得到 7 或 28。所以断线阶段的探测碰上缓存里只有这类地址时，脚本把结果记成 `inconclusive`，输出里 `DnsCacheFakeIpOnly` 是 `true`（读不到缓存里的地址时这一项是 `false`，按以前的办法判）。做断线阶段之前也可以自己看一眼：`Get-DnsClientCache -Name example.com | Select-Object Entry, Type, Data`，`Data` 是公网地址（不在上面两个网段里）时，`no-connection-observed` 才算测到了连接层。想不受 DNS 缓存影响地确认，用下一节的 5157 关联：那里用 `--resolve` 指定固定的公网 IPv4。
 
 ## 实机验收与 5157 阻断事件关联
 
@@ -274,5 +278,5 @@ v0.4.2 的「已知问题」里五条（目录权限检查的掩码、断网开�
 3. **两个规划器还有几处细节不同**，只影响极少见的网卡名和地址：Python 用 `casefold` 比较大小写，PowerShell 用 `ToLowerInvariant`（`ß` 这类字母结果不同）；BMP 以外的字符（例如表情符号）排序和计长不同；新近才进 Unicode 的字符，Windows PowerShell 5.1 自带的字符表可能当作未分配而拒绝；上游地址 `192.0.0.9`、`192.0.0.10` Python 接受、PowerShell 拒绝。
 4. **窗口里的输出没有脱敏**，见文首。
 5. **`Test-ProxyState.ps1` 不比较路由跃点数**，隧道网卡默认按名字认，见「断线演练」一节。
-6. **工具包放在被 OneDrive 接管的文件夹里时 `Install` 一律拒绝**，不区分 OneDrive 和符号链接、目录联接（三者都带重解析点属性）。这是有意的：同步文件夹里的脚本可能被另一台设备上的改动替换。请放到不同步的本机文件夹。
+6. **工具包放在被 OneDrive 接管的文件夹里时，`Install` 通常会拒绝**：OneDrive 接管的文件夹通常带重解析点属性（没有实测，没开“按需下载文件”时是否也带，也没核对过），带这个属性时脚本不区分它和符号链接、目录联接，一律拒绝。这是有意的：同步文件夹里的脚本可能被另一台设备上的改动替换。不管检查拦没拦住，都请放到不同步的本机文件夹。
 7. 如果 `Preview` 能出计划、`Install` 却报 `The selected physical adapter could not be identified`：看这张网卡在 `Get-NetAdapter -IncludeHidden | Select-Object Name, HardwareInterface, Status` 里的 `HardwareInterface` 是否为 `True`。`-IncludeAllPhysicalAdapters` 现在和核对用的是同一个口径，但手工写的网卡名不在这个口径里时仍会这样报错。
