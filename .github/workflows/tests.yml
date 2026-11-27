@@ -1,5 +1,6 @@
 # 跑全部单元测试：push 和 pull request 时在 Linux 和 Windows 上自动验证。
-# 工具包要求 Python 3.10+，在 ubuntu-latest 与 windows-latest 上分别测试 Python 3.10 与 3.13。
+# 工具包要求 Python 3.10+。矩阵只有三种组合：ubuntu-latest 配 Python 3.10 和 3.13，windows-latest 只配 3.13。
+# 没有 macOS，也不测 3.13 以后的版本；只能在 Windows 上跑的用例在 ubuntu 上会显示为跳过，只在 Linux 或 POSIX 上跑的两项在 windows 上会显示为跳过。
 name: 测试
 on:
   push:
@@ -10,6 +11,7 @@ jobs:
   tests:
     name: ${{ matrix.os }}，Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -22,6 +24,8 @@ jobs:
             python: "3.13"
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:

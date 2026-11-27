@@ -75,6 +75,20 @@ class WindowsStoragePolicyTests(unittest.TestCase):
             inspect_config.assert_not_called()
             scan.assert_not_called()
 
+    def test_metadata_audit_reports_a_mapped_drive_instead_of_refusing(self):
+        with patch.object(snapshots, "_windows_drive_type", return_value=4), patch.object(
+            claude_local_data, "scan_work",
+            return_value=([], [], {"unsafe_or_unavailable": 0, "excluded_secret_entries": 0}, {}),
+        ) as scan:
+            result = claude_local_data.audit("Z:/work")
+        self.assertTrue(result["network_or_synced_storage"])
+        self.assertEqual(str(scan.call_args.args[0]), r"Z:\work")
+        with patch.object(snapshots, "_windows_drive_type", return_value=3), patch.object(
+            claude_local_data, "scan_work",
+            return_value=([], [], {"unsafe_or_unavailable": 0, "excluded_secret_entries": 0}, {}),
+        ):
+            self.assertFalse(claude_local_data.audit("C:/work")["network_or_synced_storage"])
+
 
 @unittest.skipUnless(os.name == "nt", "Requires native Windows GetDriveTypeW")
 class NativeWindowsStorageTests(unittest.TestCase):

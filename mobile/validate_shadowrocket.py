@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from config_snapshot import SnapshotError, check_ancestors, checked_stat, local_path
+from config_snapshot import SnapshotError, checked_stat, local_path
 
 
 REQUIRED_GENERAL_SETTINGS = {
@@ -75,7 +75,10 @@ def validate(content: str) -> int:
                     f"line {number}: ipv6 = false is unsafe on iOS because native IPv6 bypasses utun"
                 )
             if setting not in REQUIRED_GENERAL_SETTINGS:
-                raise ValueError(f"line {number}: unsupported [General] setting")
+                raise ValueError(
+                    f"line {number}: unsupported [General] setting; this check only accepts the "
+                    "bundled template's ipv6 = true and hijack-dns = *:53 lines; DNS server settings are outside this check"
+                )
             if setting in general_settings:
                 raise ValueError(f"line {number}: duplicate [General] setting")
             general_settings.add(setting)
@@ -116,7 +119,7 @@ def validate(content: str) -> int:
 
 def read_safe_profile(path: Path) -> str:
     raw_local = local_path(path)
-    info = checked_stat(raw_local)
+    checked_stat(raw_local)
     resolved_parent = local_path(raw_local.parent.resolve())
     safe_path = resolved_parent / raw_local.name
     info = checked_stat(safe_path)

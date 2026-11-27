@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>跨平台网络隐私与本机环境工具包 v0.4.1 · 交互式展示与配置工作台</title>
+  <title>跨平台网络隐私与本机环境工具包 v0.4.2 · 交互式展示与配置工作台</title>
   <meta name="description" content="覆盖 Windows、macOS、Linux、Android、iOS 的网络隐私体检、路由生成、Windows 断网开关与防 DNS 旁路规划、本地快照备份与干净版跨端实测报告。MIT 开源，Celeste × 哈基米 (Gemini) 协作打造。">
   <link rel="icon" type="image/svg+xml" href="images/logo.svg">
   <link rel="stylesheet" href="styles.css">
@@ -14,7 +14,7 @@
       <div class="brand">
         <img src="images/logo.svg" alt="工具包图标">
         <div>
-          <div class="brand-title">跨平台网络隐私与本机环境工具包 <span class="badge badge-accent">v0.4.1 · MIT</span></div>
+          <div class="brand-title">跨平台网络隐私与本机环境工具包 <span class="badge badge-accent">v0.4.2 · MIT</span></div>
           <div class="brand-sub">Celeste × 哈基米 (Gemini) · 离线零联网交互工作台</div>
         </div>
       </div>
@@ -26,11 +26,11 @@
     </div>
     <nav class="tabbar-wrap" aria-label="工作台功能切换">
       <div class="tabbar" role="tablist">
-        <button type="button" class="tab-btn active" role="tab" aria-selected="true" data-tab="overview">总览 · 项目展示</button>
-        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="routing">路由工作台</button>
-        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="firewall">断网与 DNS 规划器</button>
-        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="checklist">跨端自检清单</button>
-        <button type="button" class="tab-btn" role="tab" aria-selected="false" data-tab="report">干净版实测报告</button>
+        <button type="button" class="tab-btn active" role="tab" aria-selected="true" aria-controls="panel-overview" data-tab="overview">总览 · 项目展示</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-routing" data-tab="routing">路由工作台</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-firewall" data-tab="firewall">断网与 DNS 规划器</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-checklist" data-tab="checklist">跨端自检清单</button>
+        <button type="button" class="tab-btn" role="tab" aria-selected="false" aria-controls="panel-report" data-tab="report">干净版实测报告</button>
       </div>
     </nav>
   </header>
@@ -60,8 +60,8 @@
             <div class="stat-label">与 <code>build_routing.py</code> 严格同步</div>
           </div>
           <div class="stat-box">
-            <div class="stat-val">136 项测试</div>
-            <div class="stat-label">Windows + Linux 离线单元测试覆盖</div>
+            <div class="stat-val">离线单元测试</div>
+            <div class="stat-label">CI 在 Linux 与 Windows 上运行全套测试</div>
           </div>
           <div class="stat-box">
             <div class="stat-val">0 第三方镜像</div>
@@ -151,7 +151,7 @@
             <div class="chip-row" id="domainCategoryChips"></div>
             <div class="domain-grid" id="domainGrid"></div>
             <div class="callout callout-warn" style="margin-top:14px;">
-              <strong>分流模式的工程取舍：</strong>把 <code>cdnjs.cloudflare.com</code>、<code>cdn.jsdelivr.net</code>、<code>sentry.io</code>、<code>stripe.com</code>、<code>segment.com</code>、<code>recaptcha.net</code> 等通用域名置顶走代理后，访问这些公共资源的国内站点可能会略有绕路变慢。若追求最稳单出口且配合断网开关，请改选「全公网 + 生态置顶」并将客户端 <code>domainStrategy</code> 设为 <code>AsIs</code>。
+              <strong>分流模式的工程取舍：</strong>把 <code>cdnjs.cloudflare.com</code>、<code>cdn.jsdelivr.net</code>、<code>sentry.io</code>、<code>stripe.com</code>、<code>segment.com</code>、<code>recaptcha.net</code> 等通用域名置顶走代理后，访问这些公共资源的国内站点可能会略有绕路变慢。若追求最稳单出口且配合断网开关，请改选「全公网 + 生态置顶」并将客户端 <code>domainStrategy</code> 设为 <code>AsIs</code>。另外，第 1 条 UDP/443 阻断对所有目的地生效：国内直连站点的 HTTP/3 也会被丢弃、回落到 TCP。
             </div>
           </div>
         </div>
@@ -173,7 +173,7 @@
           <div class="field">
             <label for="ksInterfaces">物理网卡名称（多个用英文逗号分隔）</label>
             <input type="text" id="ksInterfaces" value="WLAN" placeholder="例如：WLAN, 以太网">
-            <div class="field-hint">在 PowerShell 运行 <code>Get-NetAdapter | Select Name, Status</code> 查看准确名称；新增 USB 网卡或热点需重新安装。</div>
+            <div class="field-hint">在 PowerShell 运行 <code>Get-NetAdapter -Physical | Select Name, Status</code> 查看准确名称；新增 USB 网卡或热点时，要先 <code>-Action Remove</code> 再用新参数 <code>-Action Install</code>，两步之间不受保护。虚拟网卡选不进保护范围。</div>
           </div>
           <div class="field">
             <label for="ksUpstreamIp">代理上游服务器 IPv4 地址</label>
@@ -198,11 +198,11 @@
               <input type="checkbox" id="ksUsesDhcp" checked>
               所选物理网卡通过 DHCP 自动获取 IP（家用 Wi-Fi 与热点默认开启）
             </label>
-            <div class="field-hint">在 PowerShell 运行 <code>Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=TRUE" | Select Description, DHCPServer</code> 查询。</div>
+            <div class="field-hint">预填的 <code>192.168.1.1</code> 只是示例，请换成查到的地址：在 PowerShell 运行 <code>Get-CimInstance Win32_NetworkAdapterConfiguration -Filter "IPEnabled=TRUE" | Select Description, DHCPServer</code> 查询。只接受 RFC 1918 私网地址，且不能和上游地址相同。</div>
           </div>
         </div>
 
-        <div id="ksAlertBox" style="margin-top:16px;"></div>
+        <div id="ksAlertBox" style="margin-top:16px;" aria-live="polite"></div>
 
         <div class="grid-2" style="margin-top:16px;">
           <div>
@@ -215,9 +215,14 @@
           <div>
             <div class="code-toolbar">
               <strong>Windows 断网开关 PowerShell 命令</strong>
-              <button type="button" class="btn btn-sm btn-primary" id="copyKsCmdBtn">复制全部命令</button>
+              <button type="button" class="btn btn-sm btn-primary" id="copyKsCmdBtn">复制预览与安装命令</button>
             </div>
             <pre class="code-block" id="ksCmdOutput"></pre>
+            <div class="code-toolbar" style="margin-top:12px;">
+              <strong>恢复连接：卸载命令（单独复制）</strong>
+              <button type="button" class="btn btn-sm" id="copyKsRemoveBtn">复制卸载命令</button>
+            </div>
+            <pre class="code-block" id="ksRemoveCmdOutput"></pre>
           </div>
         </div>
       </div>
@@ -228,12 +233,17 @@
             <h2>物理网卡防路由器 DNS（端口 53）旁路</h2>
             <p>适用于保留国内直连分流的 Windows，封堵物理网卡直连 <code>10.0.0.0/8</code>、<code>172.16.0.0/12</code>、<code>192.168.0.0/16</code>、<code>100.64.0.0/10</code>、<code>fc00::/7</code>、<code>fe80::/10</code> 的 TCP/UDP 53 端口。</p>
           </div>
-          <button type="button" class="btn btn-sm" id="copyLanDnsCmdBtn">复制 LAN DNS 命令</button>
+          <button type="button" class="btn btn-sm" id="copyLanDnsCmdBtn">复制预览与安装命令</button>
         </div>
         <div class="callout callout-warn" style="margin-bottom:14px;">
           <strong>装之前要知道的副作用：</strong>如果系统 DNS 指向家用路由器（绝大多数家庭网络默认如此），装上本规则后<strong>一旦关闭代理客户端或 TUN，所有域名解析都会失败</strong>；公司内网 <code>10.x</code> 等私网 DNS 也会被一并拦截。临时停用代理时，请先用管理员权限运行 <code>-Action Remove</code> 精准卸载这 4 条规则。
         </div>
         <pre class="code-block" id="lanDnsCmdOutput"></pre>
+        <div class="code-toolbar" style="margin-top:12px;">
+          <strong>卸载命令（单独复制，不要和安装命令一起粘贴执行）</strong>
+          <button type="button" class="btn btn-sm" id="copyLanDnsRemoveBtn">复制卸载命令</button>
+        </div>
+        <pre class="code-block" id="lanDnsRemoveCmdOutput"></pre>
       </div>
     </section>
 
@@ -243,7 +253,7 @@
         <div class="section-head">
           <div>
             <h2>跨端隐私环境交互式自检清单</h2>
-            <p>同步自 <code>PRIVACY-CHECKLIST.md</code>，勾选进度仅保存在当前浏览器的 <code>localStorage</code>，随时可导出为脱敏验收记录。</p>
+            <p>参考 <code>PRIVACY-CHECKLIST.md</code> 整理，条目和那份文档不一一对应；勾选进度仅保存在当前浏览器的 <code>localStorage</code>，随时可导出为脱敏验收记录。</p>
           </div>
           <div style="display:flex; gap:8px; flex-wrap:wrap;">
             <button type="button" class="btn btn-sm btn-primary" id="exportCheckMdBtn">导出 Markdown</button>
@@ -309,8 +319,8 @@
 
           <!-- 实测可视化 2: Windows 防火墙优先级冲突 -->
           <div class="card" style="box-shadow:none; margin:0;">
-            <h3 style="margin:0 0 8px; font-size:16.5px;">实测 2：Windows 防火墙规则求值优先级与 MSIX 穿透</h3>
-            <p style="margin:0 0 12px; font-size:13px; color:var(--muted);">离线拆检官方 Windows Desktop MSIX（<code>6.28899.6</code>）清单发现其自带两条全配置 TCP 出站允许规则。</p>
+            <h3 style="margin:0 0 8px; font-size:16.5px;">静态拆检：Windows 防火墙规则求值优先级与 MSIX 穿透</h3>
+            <p style="margin:0 0 12px; font-size:13px; color:var(--muted);">离线拆检官方 Windows Desktop MSIX（<code>6.28899.6</code>）清单发现其声明了两条全配置 TCP 出站允许规则。下面的穿透结论是按清单和防火墙求值规则推断的，没有在已安装的环境里观测。</p>
             <div style="display:grid; gap:9px;">
               <div class="callout callout-ok">
                 <strong>最高优先级 · 显式 Block 规则</strong><br>
@@ -318,7 +328,7 @@
               </div>
               <div class="callout callout-danger">
                 <strong>中等优先级 · MSIX 自动写入的显式 Allow（穿透风险）</strong><br>
-                <code>AppxManifest.xml</code> 为 <code>Claude.exe</code> 与 <code>cowork-svc.exe</code> 自动放行全网卡 TCP，断 TUN 时会直接穿透默认出站阻止。
+                <code>AppxManifest.xml</code> 为 <code>Claude.exe</code> 与 <code>cowork-svc.exe</code> 声明放行全网卡 TCP；按推断，断 TUN 时可能直接穿透默认出站阻止。
               </div>
               <div class="callout">
                 <strong>最低优先级 · DefaultOutboundAction = Block</strong><br>
@@ -444,7 +454,7 @@
 
   <footer class="footer">
     <div>
-      <strong>跨平台网络隐私与本机环境工具包 v0.4.1</strong> · MIT License · Copyright (c) 2026 Celeste · 协作：哈基米 (Gemini)
+      <strong>跨平台网络隐私与本机环境工具包 v0.4.2</strong> · MIT License · Copyright (c) 2026 Celeste · 协作：哈基米 (Gemini)
     </div>
     <div style="display:flex; gap:14px; flex-wrap:wrap;">
       <a href="https://github.com/rumpelpalmour757-lgtm/cross-platform-privacy-environment-kit" target="_blank" rel="noopener">GitHub 首页</a>

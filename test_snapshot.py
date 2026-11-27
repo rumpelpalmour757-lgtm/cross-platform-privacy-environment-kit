@@ -1,6 +1,7 @@
+from io import BytesIO, StringIO, TextIOWrapper
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import stat
 import subprocess
 import sys
@@ -51,10 +52,118 @@ class ConfigSnapshotTests(unittest.TestCase):
         (path / "rogue.py").write_text("raise RuntimeError('hijacked')\n", encoding="utf-8")
         with self.assertRaisesRegex(snapshots.SnapshotError, "unexpected files"):
             snapshots.verify_snapshot(path)
+        with self.assertRaisesRegex(snapshots.SnapshotError, "'rogue.py'"):
+            snapshots.verify_snapshot(path)
         blocked = subprocess.run([sys.executable, str(path / "restore.py")], capture_output=True,
                                  timeout=10, text=True, env=env)
         self.assertNotEqual(blocked.returncode, 0)
         self.assertIn("unexpected files", blocked.stderr)
+        self.assertIn("'rogue.py'", blocked.stderr)
+
+    def test_snapshots_from_earlier_releases_still_verify_and_recover(self):
+        path = self.create()
+        manifest_path = path / snapshots.MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        # Launchers are checked against the hashes recorded at backup time, not the current template.
+        (path / "restore.py").write_text("# restore launcher written by an earlier release\n", encoding="utf-8")
+        manifest["launcher"] = {
+            name: snapshots.hash_regular_file(path / name) for name in snapshots.LAUNCHER_FILES
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        self.assertEqual(snapshots.verify_snapshot(path)[0], self.config)
+        # Snapshots made before the launcher existed have no launcher files or record.
+        for name in snapshots.LAUNCHER_FILES:
+            (path / name).unlink()
+        del manifest["launcher"]
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        recovered = snapshots.recover_snapshot(path, self.root)
+        self.assertEqual(snapshots.inventory(recovered), manifest["inventory"])
+
+    def test_default_backup_root_is_resolved_on_use(self):
+        code = (
+            "import pathlib, sys\n"
+            "def no_home(*args, **kwargs):\n"
+            "    raise RuntimeError('no home directory')\n"
+            "pathlib.Path.home = classmethod(no_home)\n"
+            f"sys.path.insert(0, {str(Path(snapshots.__file__).resolve().parent)!r})\n"
+            "import config_snapshot, claude_local_data\n"
+            "print('imported')\n"
+        )
+        result = subprocess.run([sys.executable, "-B", "-c", code], capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("imported", result.stdout)
+        with patch.object(snapshots.Path, "home", return_value=self.root):
+            with patch("sys.stdout", new_callable=StringIO):
+                self.assertEqual(snapshots.main(["backup", "--config-dir", str(self.config)]), 0)
+        snapshot, = (self.root / snapshots.DEFAULT_BACKUP_DIR_NAME).iterdir()
+        self.assertEqual(snapshots.verify_snapshot(snapshot)[0], self.config)
+
+    def test_printed_paths_survive_an_output_encoding_without_their_characters(self):
+        # Redirected or piped output on Windows uses the ANSI code page; cp950 (Traditional
+        # Chinese) has no simplified characters such as 备. The snapshot is already made when
+        # its path is printed, so printing must not turn the run into a failure.
+        backup_root = self.root / "快照备份"
+        output = BytesIO()
+        stream = TextIOWrapper(output, encoding="cp950", errors="strict")
+        with patch("sys.stdout", stream):
+            code = snapshots.main(["backup", "--config-dir", str(self.config), "--backup-root", str(backup_root)])
+            stream.flush()
+        self.assertEqual(code, 0)
+        self.assertIn(b"Verified snapshot: ", output.getvalue())
+        self.assertIn(b"\\u5907", output.getvalue())
+        self.assertEqual(len(list(backup_root.iterdir())), 1)
+
+    def test_entry_point_reports_runtime_errors_in_one_line(self):
+        path = self.create()
+        (path / snapshots.MANIFEST_NAME).write_text("[" * 200000 + "]" * 200000, encoding="utf-8")
+        with self.assertRaisesRegex(snapshots.SnapshotError, "manifest is invalid"):
+            snapshots.verify_snapshot(path)
+        # Path.expanduser("~unknown-user") raises RuntimeError on POSIX only; make the
+        # failure explicit so Windows exercises the same branch.
+        with patch("sys.stderr", new_callable=StringIO) as errors, \
+                patch.object(snapshots, "create_snapshot", side_effect=RuntimeError("no home")):
+            self.assertEqual(snapshots.main(["backup", "--config-dir", "~no-such-user-fixture/x"]), 1)
+        self.assertEqual(errors.getvalue(), "Snapshot operation stopped (RuntimeError).\n")
+
+    def test_apply_off_windows_points_to_recover(self):
+        with patch.object(snapshots, "os", SimpleNamespace(name="posix", environ={})):
+            with self.assertRaisesRegex(snapshots.SnapshotError, "requires Windows.*use recover"):
+                snapshots.ensure_v2rayn_stopped()
+
+    def test_linux_mount_table_uses_the_top_mount_and_decodes_escapes(self):
+        base = "/dev/sda1 / ext4 rw 0 0\n"
+        cases = (
+            (base + "auto.home /home autofs rw 0 0\nserver:/home /home nfs4 rw 0 0\n", "/home/example/b", True),
+            (base + "server:/data /data nfs4 rw 0 0\n/dev/sdb1 /data ext4 rw 0 0\n", "/data/b", False),
+            (base + "server:/x /mnt/a\\011b nfs rw 0 0\n", "/mnt/a\tb/c", True),
+            (base + "server:/x /mnt/a\\134b cifs rw 0 0\n", "/mnt/a\\b/c", True),
+            (base + "server:/x /mnt/share nfs rw 0 0\n", "/mnt/shared/c", False),
+            ("/dev/sda1 / ext4 rw 0 0\n", "/srv/b", False),
+        )
+        for fstype in ("ceph", "glusterfs", "fuse.gvfsd-fuse", "fuse.s3fs", "virtiofs", "vboxsf"):
+            cases += ((base + f"share /mnt/share {fstype} rw 0 0\n", "/mnt/share/b", True),)
+        with patch.object(snapshots.sys, "platform", "linux"):
+            for mounts, target, rejected in cases:
+                with self.subTest(mounts=mounts, target=target), patch.object(
+                    snapshots, "_read_proc_mounts", return_value=mounts
+                ):
+                    problem = snapshots.storage_problem(PurePosixPath(target))
+                    self.assertEqual(problem is not None, rejected, problem)
+            with patch.object(snapshots, "_read_proc_mounts", return_value=None):
+                self.assertIsNone(snapshots.storage_problem(PurePosixPath("/srv/b")))
+
+    def test_macos_cloud_folders_are_rejected(self):
+        home = PurePosixPath("/Users/example")
+        with patch.object(snapshots.sys, "platform", "darwin"), patch.object(
+            snapshots.Path, "home", return_value=home
+        ):
+            for target, rejected in (
+                (home / "Library" / "Mobile Documents" / "x", True),
+                (home / "Library" / "cloudstorage" / "Drive" / "x", True),
+                (home / "backups", False),
+            ):
+                with self.subTest(target=target):
+                    self.assertEqual(snapshots.storage_problem(target) is not None, rejected)
 
     def test_tampered_restore_launcher_is_rejected_by_verify(self):
         path = self.create()

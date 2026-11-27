@@ -2,12 +2,14 @@
 """Report local macOS/Linux routing and resolver observations without addresses."""
 
 from collections import Counter
+import errno
 import ipaddress
 import json
 from pathlib import Path
 import platform
 import re
 import shutil
+import socket
 import subprocess
 import sys
 
@@ -21,7 +23,7 @@ TUNNEL_KINDS = {
     "ip6tnl", "ipip", "sit", "vti", "vti6", "xfrm",
 }
 TUNNEL_NAME = re.compile(
-    r"(?:(?:tun|tap|utun|ppp|wg|tailscale)(?:\d+|[-_].+)?|"
+    r"(?:(?:tun|tap|utun|ppp|wg|tailscale|ipsec)(?:\d+|[-_].+)?|"
     r"(?:sing[-_]?box|mihomo|clash)(?:[-_].+)?)"
 )
 RESOLVECTL_HEADER = re.compile(r"^(?:Global|Link \d+ \([^\n]*\)):(.*)$", re.MULTILINE)
@@ -148,8 +150,10 @@ def _normalize_mac_split_dest(token):
     return None
 
 
-def mac_defaults(text, *, split_only=False):
+def _mac_route_rows(text, split_only):
     routes = []
+    destinations = []
+    scoped = 0
     netif_index = None
     for row in text.splitlines():
         fields = row.split()
@@ -160,8 +164,9 @@ def mac_defaults(text, *, split_only=False):
             continue
         if not fields:
             continue
+        destination = _normalize_mac_split_dest(fields[0]) if split_only else fields[0]
         matched = (
-            _normalize_mac_split_dest(fields[0]) is not None
+            destination is not None
             if split_only
             else fields[0] in {"default", "0.0.0.0/0", "::/0"}
         )
@@ -171,10 +176,22 @@ def mac_defaults(text, *, split_only=False):
             if len(fields) <= netif_index:
                 raise ValueError("Truncated default route row")
             flags = fields[2]
-            routes.append(("U" in flags and "R" not in flags and "B" not in flags, (fields[netif_index],)))
+            # "I" marks an interface-scoped route: only sockets bound to that interface
+            # use it, so it is counted separately and is not a general forwarding candidate.
+            if "I" in flags:
+                scoped += 1
+            routes.append((
+                "U" in flags and "R" not in flags and "B" not in flags and "I" not in flags,
+                (fields[netif_index],),
+            ))
+            destinations.append(destination)
     if netif_index is None:
         raise ValueError("Missing route-table header")
-    return routes
+    return routes, scoped, destinations
+
+
+def mac_defaults(text, *, split_only=False):
+    return _mac_route_rows(text, split_only)[0]
 
 
 def linux_link_kinds(text):
@@ -254,13 +271,37 @@ def mac_routes(family, run):
     text = run("netstat", "-rn", "-f", "inet" if family == "ipv4" else "inet6")
     if text is not None:
         try:
-            return (
-                route_summary(mac_defaults(text), "macos_netstat", {}),
-                route_summary(mac_defaults(text, split_only=True), "macos_netstat", {}, "split_route_count"),
-            )
+            default_rows, default_scoped, _ = _mac_route_rows(text, False)
+            split_rows, split_scoped, split_destinations = _mac_route_rows(text, True)
         except ValueError:
             pass
+        else:
+            default = route_summary(default_rows, "macos_netstat", {})
+            default["interface_scoped_route_count"] = default_scoped
+            split = route_summary(split_rows, "macos_netstat", {}, "split_route_count")
+            split["interface_scoped_route_count"] = split_scoped
+            # Fixed split prefixes (never addresses) carried by tunnel candidates. macOS has one
+            # unscoped routing table, so these more-specific routes win over a default route.
+            split["tunnel_split_prefixes"] = sorted({
+                destination
+                for destination, (eligible, names) in zip(split_destinations, split_rows, strict=True)
+                if eligible and interface_kind(names[0], {}) == "tunnel_candidate"
+            })
+            return default, split
     return route_summary(None, None, {}), route_summary(None, None, {}, "split_route_count")
+
+
+def ipv6_unsupported_by_kernel():
+    """Return True only when the kernel refuses AF_INET6 sockets. No packet is sent."""
+    family = getattr(socket, "AF_INET6", None)
+    if family is None:
+        return False
+    try:
+        probe = socket.socket(family, socket.SOCK_DGRAM)
+    except OSError as error:
+        return error.errno == errno.EAFNOSUPPORT
+    probe.close()
+    return False
 
 
 def _parse_resolver_ip(value):
@@ -333,11 +374,17 @@ def resolver_summary(values, source):
     }
 
 
-def collect(system, reader=read_local_file, run=read_command):
+def collect(system, reader=read_local_file, run=read_command, ipv6_unsupported=ipv6_unsupported_by_kernel):
     if system == "Linux":
         link_kinds = linux_link_kinds(run("ip", "-j", "-details", "link", "show"))
         routes = {family: linux_routes(family, reader, run, link_kinds) for family in ("ipv4", "ipv6")}
         split_routes = {family: linux_split_routes(family, reader, run, link_kinds) for family in ("ipv4", "ipv6")}
+        if routes["ipv6"]["status"] != "observed" and ipv6_unsupported():
+            # A kernel without an IPv6 stack (for example booted with ipv6.disable=1) has
+            # no IPv6 route table at all; keep that apart from a table that could not be read.
+            for summary in (routes["ipv6"], split_routes["ipv6"]):
+                if summary["status"] != "observed":
+                    summary["reason"] = "address_family_unsupported"
         text = run("resolvectl", "dns")
         if text is not None and RESOLVECTL_HEADER.search(text):
             values = _extract_resolvectl_tokens(text)
@@ -358,18 +405,23 @@ def collect(system, reader=read_local_file, run=read_command):
         dns = resolver_summary(values, "macos_scutil")
     else:
         return {"status": "unsupported_platform"}
+    limitations = [
+        "Default and split-tunnel route candidates do not establish policy-routing rule precedence.",
+        "Interface types are inferred from local names and available link metadata.",
+        "Resolver settings do not establish upstream DNS, browser DoH, or per-app traffic.",
+        "No packets were sent; traffic path, firewall rules, and failure blocking remain untested.",
+    ]
+    if system == "Darwin":
+        limitations.insert(
+            1, "Interface-scoped routes (flag I) are counted separately and are not forwarding candidates.",
+        )
     return {
         "status": "local_observations_collected",
         "platform": "macos" if system == "Darwin" else "linux",
         "default_routes": routes,
         "split_tunnel_routes": split_routes,
         "dns_configuration": dns,
-        "limitations": [
-            "Default and split-tunnel route candidates do not establish policy-routing rule precedence.",
-            "Interface types are inferred from local names and available link metadata.",
-            "Resolver settings do not establish upstream DNS, browser DoH, or per-app traffic.",
-            "No packets were sent; traffic path, firewall rules, and failure blocking remain untested.",
-        ],
+        "limitations": limitations,
     }
 
 
