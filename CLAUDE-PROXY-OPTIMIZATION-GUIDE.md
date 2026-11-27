@@ -34,7 +34,7 @@
    # 管理员 PowerShell 安装（安装前导出 .wfw 备份，SHA-256 只记进日志、不比对；备份位置和导回的后果见 WINDOWS-KILL-SWITCH.md）：
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Manage-WindowsLanDnsGuard.ps1 -Action Install -IncludeAllPhysicalAdapters
    ```
-   > 副作用：装上后只要关掉代理客户端或 TUN，系统 DNS 指向路由器的网络就会全部解析失败；公司内网 `10.x` 等私网 DNS 也会被封。详见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 末尾「装之前要知道的副作用」。
+   > 副作用：装上后只要关掉代理客户端或 TUN，系统 DNS 指向路由器的网络就会全部解析失败；公司内网 `10.x` 等私网 DNS 也会被封。详见 [WINDOWS-KILL-SWITCH.md 里讲 LAN DNS Guard 的那一节](WINDOWS-KILL-SWITCH.md#补充保留国内直连分流时的物理网卡防路由器-dns-旁路)中的「装之前要知道的副作用」。
 4. **移动端同步升级**：
    - **iOS**：按 [mobile/README.md](mobile/README.md) 导入 [mobile/shadowrocket-local-proxy.conf](mobile/shadowrocket-local-proxy.conf)（已开启 `ipv6 = true`、`hijack-dns = *:53`、`IP-CIDR6,::/0,REJECT,no-resolve` 与 `FINAL,PROXY`）；
    - **Android**：按 [mobile/README.md](mobile/README.md) 扫码或剪贴板导入 `v2rayNG` 新版 13 条规则、重连 VPN、配置 DoH 并开启系统防漏开关。

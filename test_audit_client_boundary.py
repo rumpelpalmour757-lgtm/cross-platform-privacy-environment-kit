@@ -255,6 +255,19 @@ class ClientBoundaryAuditTests(unittest.TestCase):
         self.assertEqual(report["localMcpBridges"]["claudeCliMcpUnreadableConfigCount"], 0)
         self.assertFalse(any("could not be read" in note for note in report["boundaryNotes"]))
 
+    def test_empty_config_files_configure_nothing_and_count_as_read(self):
+        # The backup check in claude_local_data.py also lets an empty file through.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / ".claude").mkdir()
+            (root / ".claude" / "settings.json").write_bytes(b"")
+            (root / ".claude.json").write_bytes(b"\xef\xbb\xbf \r\n")
+            report = self._audit(root)
+        self.assertEqual(report["cliSettingsReadState"], "read")
+        self.assertEqual(report["localMcpBridges"]["claudeCliMcpUnreadableConfigCount"], 0)
+        self.assertEqual(report["localMcpBridges"]["claudeCliMcpServerCount"], 0)
+        self.assertFalse(any(report["cliAntiTelemetryFlags"].values()))
+
     def test_settings_read_state_names_why_the_file_was_not_read(self):
         def oversized(settings):
             settings.write_text("{}", encoding="utf-8")

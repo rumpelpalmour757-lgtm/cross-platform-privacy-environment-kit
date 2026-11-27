@@ -56,6 +56,8 @@ v2rayNG 是使用 Android VPN 接口的客户端之一。优先沿用自己已�
    python3 mobile/validate_android_v2rayng.py mobile/android-v2rayng-claude-routing.json
    ```
 
+   Windows 上把 `python3` 换成 `py -3`（python.org 的安装程序默认不把 `python`、`python3` 加进 PATH）。
+
 > 改完 DNS、路由或「启用本地 DNS」后，都要在 `v2rayNG` 主页面**停止再启动**一次服务。只保存设置不会让正在运行的核心重新加载。
 
 ### Android 系统防漏开关与架构边界提醒
@@ -86,6 +88,8 @@ v2rayNG 是使用 Android VPN 接口的客户端之一。优先沿用自己已�
 ```text
 python3 mobile/validate_shadowrocket.py mobile/shadowrocket-local-proxy.conf
 ```
+
+Windows 上同样把 `python3` 换成 `py -3`。
 
 校验要求开启 `ipv6 = true` 与 `hijack-dns = *:53`（拒绝会导致原生 IPv6 绕过隧道的 `ipv6 = false`），核对全部 11 条本地直连例外（2 条域名、9 条 IPv4/IPv6 网段）、公网 IPv6 兜底处置以及末条 `FINAL,PROXY` 规则。它只认随包模板的写法：`[General]` 里只接受这两行，加了 `dns-server` 之类的其他设置会报 `unsupported [General] setting`；加密 DNS 不在校验范围内，要在 App 里另行确认。
 

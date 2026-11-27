@@ -10,7 +10,6 @@ from pathlib import Path
 import re
 import stat
 import sys
-import tempfile
 from uuid import uuid4
 
 sys.dont_write_bytecode = True
@@ -18,7 +17,7 @@ sys.dont_write_bytecode = True
 from config_snapshot import (
     SnapshotError, check_ancestors, checked_stat, copy_tree, describe_names, ensure_distinct, inventory,
     local_path, path_is_within, paths_overlap, recorded_path, restrict_private_permissions, safe_rmtree,
-    storage_problem,
+    storage_problem, tolerate_unencodable_output,
 )
 
 
@@ -70,7 +69,7 @@ PUBLIC_KEY_WORDS = {"public", "publishable"}
 # A trailing word like these names a location, helper, timing setting or another name, not the secret itself.
 NON_SECRET_LAST_WORDS = {
     "dir", "directory", "path", "file", "helper", "command", "cmd", "url", "uri", "ttl", "ms", "timeout",
-    "env", "name", "id",
+    "env", "name", "id", "limit", "max", "min", "count", "size", "length", "domain",
 }
 # Known settings whose values are helper commands or file paths. Their values are still
 # searched for secret-shaped text.
@@ -85,8 +84,12 @@ SECRET_VALUE_PATTERN = re.compile(
     r"|-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
     re.IGNORECASE,
 )
-# ${VAR} and $VAR are references, not values. ${VAR:-default} keeps its literal default.
-PLACEHOLDER_PATTERN = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::-([^{}]*))?\}|\$[A-Z_][A-Z0-9_]*\b")
+# References, not values: $env:VAR and ${env:VAR} (PowerShell), %VAR% (cmd.exe), ${VAR} and $VAR.
+# ${VAR:-default} keeps its literal default.
+PLACEHOLDER_PATTERN = re.compile(
+    r"\$\{?(?i:env):[A-Za-z_][A-Za-z0-9_]*\}?|%[A-Za-z_][A-Za-z0-9_]*%"
+    r"|\$\{[A-Za-z_][A-Za-z0-9_]*(?::-(?P<default>[^{}]*))?\}|\$[A-Z_][A-Z0-9_]*\b"
+)
 # Inside a command line the shell also expands lower-case names such as $tok.
 SHELL_REFERENCE_PATTERN = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*")
 AUTH_SCHEME_PATTERN = re.compile(r"^(?:bearer|basic|token)\b\s*", re.IGNORECASE)
@@ -96,8 +99,17 @@ PATH_LIKE_PATTERN = re.compile(r"^(?:/|\.{1,2}[\\/]|~[\\/]|[A-Za-z]:[\\/])|\.(?:
 URL_PASSWORD_PATTERN = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:[^\s/?#@]+@")
 ASSIGNMENT_PATTERN = re.compile(r"(?:^|[\s?&#;'\"(])-{0,2}([A-Za-z_][A-Za-z0-9_.-]*)=([^\s&#'\"]*)")
 HEADER_PATTERN = re.compile(r"(?:^|[\s'\"])([A-Za-z][A-Za-z0-9_-]*)\s*:\s*([^'\"\r\n]*)")
+# Headers that carry credentials whatever their value looks like (Cookie: a=1; sid=...).
+AUTH_HEADER_NAMES = {
+    "authorization", "proxy-authorization", "cookie", "x-api-key", "api-key", "x-auth-token",
+    "x-access-token", "x-token", "private-token", "x-goog-api-key",
+}
+# Command-line options that take a "Name: value" header.
+HEADER_FLAGS = ("-h", "--header", "-header", "-headers")
 FLAG_PATTERN = re.compile(r"^-{1,2}([A-Za-z][A-Za-z0-9_-]*)$")
 MAX_LISTED_FINDINGS = 10
+# Windows refuses longer paths unless long paths are enabled (folders: 248 characters).
+WINDOWS_MAX_PATH = 260
 FORMAT_VERSION = 2
 MANIFEST_NAME = "manifest.json"
 PAYLOAD_NAME = "work"
@@ -165,34 +177,52 @@ def _secret_named(name, broad=False):
 
 def _literal_text(text):
     for _ in range(5):  # Nested ${A:-${B}} defaults unwrap one level per pass.
-        expanded = PLACEHOLDER_PATTERN.sub(lambda match: match.group(1) or "", text)
+        expanded = PLACEHOLDER_PATTERN.sub(lambda match: match.group("default") or "", text)
         if expanded == text:
             break
         text = expanded
     return text
 
 
-def _is_literal_secret_value(text, in_command=False):
+def _plain_value(text, in_command=False):
+    """The value with references, quotes and an auth scheme such as "Bearer" taken off."""
     text = _literal_text(text)
     if in_command:
         text = SHELL_REFERENCE_PATTERN.sub("", text)
-    value = AUTH_SCHEME_PATTERN.sub("", text.strip().strip("'\"")).strip()
+    return AUTH_SCHEME_PATTERN.sub("", text.strip().strip("'\"")).strip()
+
+
+def _is_literal_secret_value(text, in_command=False):
+    value = _plain_value(text, in_command)
     if not value or value.casefold() in NON_SECRET_WORDS:
         return False
     if in_command and not any(character.isalnum() for character in value):
         return False  # Wildcards and punctuation, such as the "*)" of a permission rule Bash(gh auth token:*).
+    if in_command and value.startswith(("|", "\\", "(", "[")):
+        return False  # A search pattern, such as grep -E 'token=|password=' or rg 'token=\w+'.
     return not value.startswith(("$(", "`"))  # Command substitution fetches the value at run time.
+
+
+def _header_has_secret(literal, match):
+    name, value = match.group(1), match.group(2)
+    if not _secret_named(name, broad=True) or not _is_literal_secret_value(value, in_command=True):
+        return False
+    if name.casefold() in AUTH_HEADER_NAMES or len(_plain_value(value, in_command=True).split()) == 1:
+        return True
+    # Several words after "Name:" are prose, as in echo 'Password: not stored here', unless
+    # the text is the value of a header option such as curl -H.
+    before = literal[:match.start(1)].rstrip(" \t'\"=").split()
+    return bool(before) and before[-1].casefold() in HEADER_FLAGS
 
 
 def _string_has_secret(text):
     literal = _literal_text(text)
     if SECRET_VALUE_PATTERN.search(literal) or URL_PASSWORD_PATTERN.search(literal):
         return True
-    for pattern in (ASSIGNMENT_PATTERN, HEADER_PATTERN):
-        for match in pattern.finditer(literal):
-            if _secret_named(match.group(1), broad=True) and _is_literal_secret_value(match.group(2), in_command=True):
-                return True
-    return False
+    for match in ASSIGNMENT_PATTERN.finditer(literal):
+        if _secret_named(match.group(1), broad=True) and _is_literal_secret_value(match.group(2), in_command=True):
+            return True
+    return any(_header_has_secret(literal, match) for match in HEADER_PATTERN.finditer(literal))
 
 
 def _find_inline_secrets(document):
@@ -406,9 +436,27 @@ def copy_file(entry, destination):
     return {"size": size, "sha256": digest.hexdigest()}
 
 
-def publish(stage, destination, prefix):
+def publication_name(prefix):
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    target = destination / f"{prefix}-{timestamp}-{uuid4().hex}"
+    return f"{prefix}-{timestamp}-{uuid4().hex}"
+
+
+def staging_folder(destination, name, inner=None):
+    """Create the private folder a snapshot is built in before it is published as ``name``.
+
+    The folder (or ``inner`` inside it) is exactly as long a path as the published one, so
+    every file that was written and verified while staging can still be opened after the
+    rename. Windows refuses paths over 260 characters unless long paths are enabled; a
+    shorter staging name let a snapshot verify there and fail to open once published.
+    """
+    reserved = len(name) - (len(inner) + 1 if inner else 0)
+    stage = destination / ("." + name[:reserved - 1])
+    stage.mkdir(mode=0o700)
+    return stage
+
+
+def publish(stage, destination, name):
+    target = destination / name
     if os.path.lexists(target):
         raise SnapshotError("A publication path is already present.")
     stage.rename(target)
@@ -499,7 +547,8 @@ def backup(config, project, destination, *, require_config=True, allow_inline_se
         raise SnapshotError("The selected project directory does not exist.")
     if not files:
         raise SnapshotError("No selected work files were found.")
-    stage = Path(tempfile.mkdtemp(prefix=".claude-work-stage-", dir=destination))
+    final_name = publication_name("claude-work")
+    stage = staging_folder(destination, final_name)
     try:
         restrict_private_permissions(stage, is_dir=True)
         payload = stage / PAYLOAD_NAME
@@ -536,7 +585,7 @@ def backup(config, project, destination, *, require_config=True, allow_inline_se
         }
         (stage / MANIFEST_NAME).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         verify(stage)
-        published = publish(stage, destination, "claude-work")
+        published = publish(stage, destination, final_name)
         if report is not None:
             report["excluded_secret_entries"] = skipped["excluded_secret_entries"]
             report["allowed_inline_secret_findings"] = findings
@@ -552,7 +601,8 @@ def recover(snapshot, destination):
     if path_is_within(destination, snapshot):
         raise SnapshotError("Choose a recovery directory outside the snapshot.")
     expected, modes = read_verified_snapshot(snapshot)
-    staging_root = Path(tempfile.mkdtemp(prefix=".claude-recover-stage-", dir=destination))
+    final_name = publication_name("claude-recovery")
+    staging_root = staging_folder(destination, final_name, inner="recovery")
     try:
         restrict_private_permissions(staging_root, is_dir=True)
         recovery = staging_root / "recovery"
@@ -564,12 +614,33 @@ def recover(snapshot, destination):
                 target.chmod(mode)
                 if stat.S_IMODE(checked_stat(target).st_mode) != mode:
                     raise SnapshotError("The recovery filesystem did not preserve file permissions.")
-        return publish(recovery, destination, "claude-recovery")
+        return publish(recovery, destination, final_name)
     finally:
         safe_rmtree(staging_root)
 
 
+def _is_windows():
+    return os.name == "nt"
+
+
+def _long_path_hint(error):
+    """Explain a Windows error on a path near the length limit. The path itself is not shown."""
+    if not _is_windows() or not isinstance(error, OSError):
+        return ""
+    lengths = [len(os.fspath(name)) for name in (error.filename, error.filename2)
+               if isinstance(name, (str, bytes, os.PathLike))]
+    if not lengths or max(lengths) < WINDOWS_MAX_PATH - 12:
+        return ""
+    return (
+        f" A path involved is {max(lengths)} characters long; Windows refuses paths over "
+        f"{WINDOWS_MAX_PATH} characters (folders over {WINDOWS_MAX_PATH - 12}) unless long paths are "
+        "enabled. Choose a shorter destination folder, or enable long paths (the python.org "
+        "installer's 'Disable path length limit', or LongPathsEnabled = 1)."
+    )
+
+
 def main(argv=None):
+    tolerate_unencodable_output()
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for operation in ("audit", "backup"):
@@ -631,7 +702,7 @@ def main(argv=None):
         return 1
     except (OSError, ValueError, RuntimeError) as error:
         # RuntimeError covers RecursionError and an unresolvable "~user" path.
-        print(f"Claude work operation stopped ({type(error).__name__}).", file=sys.stderr)
+        print(f"Claude work operation stopped ({type(error).__name__}).{_long_path_hint(error)}", file=sys.stderr)
         return 1
     return 0
 

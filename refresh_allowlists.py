@@ -20,7 +20,7 @@ from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_ope
 from uuid import uuid4
 
 from build_routing import LOCAL_NETWORKS
-from config_snapshot import SnapshotError, checked_stat, hash_regular_file, local_path
+from config_snapshot import SnapshotError, checked_stat, hash_regular_file, local_path, tolerate_unencodable_output
 
 
 UPSTREAM_HOST = "raw.githubusercontent.com"
@@ -226,6 +226,7 @@ def recently_refreshed(directory, hours):
 
 
 def main(argv=None):
+    tolerate_unencodable_output()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-directory", type=Path, required=True)
     parser.add_argument("--from-directory", type=Path, help="Read the two saved lists instead of fetching.")

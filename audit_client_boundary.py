@@ -97,7 +97,8 @@ def _load_json_file(file_path):
     state is "absent" or "read", or one of the states in UNREAD_STATES for a file
     that exists but was not read: "not_regular_file" (symbolic link, directory, or
     other special entry), "too_large", "invalid_json", or "unreadable" (could not
-    be opened or listed).
+    be opened or listed). An empty file is "read" with no data: it configures nothing,
+    the same view claude_local_data.py takes when it checks a backup.
     """
     try:
         info = os.lstat(file_path)
@@ -115,6 +116,8 @@ def _load_json_file(file_path):
         return None, "unreadable"
     except UnicodeError:
         return None, "invalid_json"
+    if not raw.strip():
+        return None, "read"
     try:
         return json.loads(raw), "read"
     except (ValueError, RecursionError):

@@ -1,7 +1,7 @@
 from contextlib import redirect_stderr, redirect_stdout
 import hashlib
 from http.client import IncompleteRead
-from io import BytesIO, StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -145,6 +145,23 @@ class RefreshTests(unittest.TestCase):
             self.assertEqual(main(args), 1)
             self.assertEqual(list(output.iterdir()), [preview])
             self.assertEqual(preview.read_bytes(), old_bytes)
+
+    def test_printed_preview_path_survives_an_output_encoding_without_its_characters(self):
+        # cp950, the ANSI code page of Traditional Chinese Windows, has no simplified 预.
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "direct.txt").write_bytes(DOMAINS)
+            (root / "cncidr.txt").write_bytes(NETWORKS)
+            output = root / "预览"
+            raw = BytesIO()
+            stream = TextIOWrapper(raw, encoding="cp950", errors="strict")
+            with patch("sys.stdout", stream):
+                code = main(["--from-directory", str(root), "--output-directory", str(output)])
+                stream.flush()
+            self.assertEqual(code, 0)
+            self.assertIn(b"Preview: ", raw.getvalue())
+            self.assertIn(b"\\u9884", raw.getvalue())
+            self.assertIn(b"Client settings were not changed.", raw.getvalue())
 
     def test_daily_cadence_skips_refresh_of_recent_preview(self):
         with TemporaryDirectory() as folder, redirect_stdout(StringIO()):

@@ -95,7 +95,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Inspect-WindowsFirewal
 py -3 .\audit_client_boundary.py
 ```
 
-`environment_report.py` 已内置合并 `audit_client_boundary.py`，输出三态安全摘要（**已通过 / 存在缺口 / 未知盲区 `unknown`**）与可离线双击浏览/打印存 PDF 的 HTML 体检单；自动遮盖个人用户名、自定义网卡名与本地 MCP 命令，并核查 CLI 5 项防后台外联开关与本地 MCP 桥接数量（加 `--project-dir <项目目录>` 时把该项目的 `.mcp.json` 也算进去；配置文件读不了时记为 `unknown`，不当作 0）。关于桌面端，统一体检只报告本机是否装了 Desktop；MSIX 自动写入的防火墙放行规则要看 `Inspect-WindowsFirewall.ps1` 输出的 `MsixClaudeOutboundAllowCount`。
+`environment_report.py` 已内置合并 `audit_client_boundary.py`，输出三态安全摘要（**已通过 / 存在缺口 / 未知盲区 `unknown`**）与可离线双击浏览/打印存 PDF 的 HTML 体检单；自动遮盖个人用户名、自定义网卡名与本地 MCP 命令，并核查 CLI 5 项防后台外联开关与本地 MCP 桥接数量（加 `--project-dir <项目目录>` 时把该项目的 `.mcp.json` 也算进去；配置文件读不了时记为 `unknown`，不当作 0）。关于桌面端，统一体检只报告本机是否装了 Desktop；MSIX 自动写入的防火墙放行规则要看 `Inspect-WindowsFirewall.ps1` 输出的 `MsixClaudeOutboundAllowCount`。Windows 的系统 DNS 一项要每一行列了解析器的网卡记录都设成严格的系统 DoH 自动升级才算通过，TUN 网卡、虚拟网卡、没连上的网卡和 IPv6 记录（例如系统默认的 `fec0:0:0:ffff::1` 这类占位解析器）都算在内，有一行不满足就记 `unknown`；说明里按“地址族 #接口编号”列出这些行，可以用 `Get-DnsClientServerAddress` 对照。
 
 > 体检单里没有用户名和路径，但带着宿主机的时区、UTC 偏移和区域语言，转发或公开前请留意。本仓库的 `.gitignore` 忽略根目录下的 `.html`、`env-health*.html`、`evidence/`、`*.wfw` 和 `*.jsonl`；把工具包放进你自己的 Git 仓库时，也请别把这些本机输出提交上去。
 
@@ -110,7 +110,11 @@ py -3 .\build_routing.py print-doh-domains
 
 - 启用严格断网开关或要求最高出口一致性时，建议使用 [routing-claude-global.json](routing-claude-global.json)，将 `domainStrategy` 设为 `AsIs` 并把 [claude-doh-domains.txt](claude-doh-domains.txt) 绑定到远端加密 DNS。其他域名策略没有测过：选了遇到 IP 规则就先解析域名的策略（如 `IPOnDemand`）时，解析到两个 Anthropic IPv6 前缀的主机名可能在 IPv6 阻断那一条就被拦下，表现为打不开。
 - 保留国内直连分流时，建议使用 [routing-claude-ecosystem.json](routing-claude-ecosystem.json)（30 项生态条目、IPv4 网段与 IPv6/QUIC 兜底均排在 `geosite:cn` 之前）。
-- 使用 [refresh_allowlists.py](refresh_allowlists.py) 拉取上游国内直连预览时，建议显式指定已审阅的 `--commit <40位SHA>` 及 `--expected-direct-sha256` / `--expected-cidr-sha256`。
+- 使用 [refresh_allowlists.py](refresh_allowlists.py) 拉取上游国内直连预览时，建议显式指定已审阅的 `--commit <40位SHA>` 及 `--expected-direct-sha256` / `--expected-cidr-sha256`。`--output-directory` 必须给，请指向仓库外面的本机目录：预览写进跑自动同步的那份克隆，会成为未跟踪的文件，下一次自动同步会因为工作区不干净停下。
+
+  ```powershell
+  py -3 .\refresh_allowlists.py --output-directory "<仓库外的本机目录>" --commit <40位SHA> --expected-direct-sha256 <64位十六进制> --expected-cidr-sha256 <64位十六进制>
+  ```
 
 #### 3. 物理网卡防路由器 DNS 旁路（保留分流时推荐）
 
@@ -131,7 +135,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Manage-WindowsLanDnsGu
 
 #### 4. 严格断网开关与真实 TUN 连通校验
 
-完整步骤见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md)（使用 DHCP 网卡时**必须**传入 `-DhcpServer`，安装前先 `Preview`；那一节的命令要先在窗口里执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`；工具包请放在个人主目录下的子文件夹，这一版放在 `C:\Program Files` 下会被拒，见该文档的已知问题）。需要观察 TUN 开着时能不能连通时，用普通用户执行：
+完整步骤见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md)（使用 DHCP 网卡时**必须**传入 `-DhcpServer`，安装前先 `Preview`；那一节的命令要先在窗口里执行 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force`，不加 `-Force` 时 Windows PowerShell 5.1 会先问是否更改、默认答“否”；工具包请放在个人主目录下的子文件夹，这一版放在 `C:\Program Files` 下会被拒，见该文档的已知问题）。需要观察 TUN 开着时能不能连通时，用普通用户执行：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Test-ProxyState.ps1 -Stage normal -AsJson
@@ -165,7 +169,8 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 ```
 
 - `--destination` 指向的目录要事先建好，而且只有你自己能访问；不存在时报 `The destination directory does not exist.`。`recover` 恢复到一个新目录，可以直接选放快照的那个目录，但不能选快照里面。
-- 备份前对 `settings.json`、`settings.local.json`、`.mcp.json` 做启发式的明文密钥检查（键名、常见密钥形状、URL 里的口令、命令行参数里的密钥）；这些文件不是严格 JSON（带注释、尾逗号）时按“无法确认”拒绝。藏在 URL 路径里的令牌、写成 JSON 数字的值、`-p` 这类短参数后面的值查不出来；权限规则里的命令名（如 `Bash(gh auth token:*)`）、`--key` 后面的文件路径、命令里的 `$变量` 不算明文密钥。会话记录（`history.jsonl`、`projects/`）不检查。加 `--allow-inline-secrets` 会照样备份，并列出放过了哪些文件和键名。
+- Windows 默认不支持超过 260 个字符的路径。Claude Code 按项目路径给会话目录起名，名字本来就长，再放进快照目录后可能超长，这时备份或恢复会停下并提示路径过长（快照在发布前按最终路径的长度校验过，不会出现“备份报成功、事后打不开”）。把 `--destination` 选在短一点的位置（如 `D:\cb`），或者开启长路径支持：python.org 安装程序最后一页的 “Disable path length limit”，或把注册表里的 `LongPathsEnabled` 设为 1。
+- 备份前对 `settings.json`、`settings.local.json`、`.mcp.json` 做启发式的明文密钥检查（键名、常见密钥形状、URL 里的口令、命令行参数里的密钥）；这些文件不是严格 JSON（带注释、尾逗号）时按“无法确认”拒绝。藏在 URL 路径里的令牌、写成 JSON 数字的值、`-p` 这类短参数后面的值、命令里加了引号的赋值（如 `export API_TOKEN="…"`、PowerShell 的 `$env:API_TOKEN="…"`；值是 `sk-ant-`、`ghp_` 这类常见密钥形状的除外）查不出来。下面这些不算明文密钥：权限规则里的命令名（如 `Bash(gh auth token:*)`）、`--key` 后面的文件路径、对环境变量的引用（`${变量}`、`$变量`，PowerShell 的 `$env:变量`，cmd 的 `%变量%`）、grep 或 rg 的匹配模式（`'token=|password='`、`'token=\w+'`）、`echo 'Password: not stored here'` 这类冒号后面是几个词的提示文字（`Authorization`、`Cookie`、`X-Api-Key` 等认证请求头和 `-H` 后面的请求头除外）、`--token-limit=200000`、`TOKEN_LIMIT`、`COOKIE_DOMAIN` 这类以 limit、max、count、size、length、domain 等结尾的名字。hook 或 statusLine 命令里出现“名字=一个词”“名字: 一个词”时仍可能误报：看报错列出的键路径，确认不是密钥后加 `--allow-inline-secrets`。会话记录（`history.jsonl`、`projects/`）不检查。加 `--allow-inline-secrets` 会照样备份，并列出放过了哪些文件和键名。
 - 按文件名排除的东西不进备份：`.env*`、`*.key`、`*.pem` 这类密钥文件、`auth.json`、`token.json`、`credentials.json` 等凭据文件和 `.git`。排除了几个，备份完成时会打印一行，并记进快照的 `manifest.json`。
 - “只允许本机盘”实际查了什么：Linux 按 `/proc/mounts` 拒绝 NFS、SMB、9p、sshfs 等网络或共享文件系统；macOS 只拦 iCloud（`~/Library/Mobile Documents`）和 `~/Library/CloudStorage` 下的目录，不查 `/Volumes` 下的网络卷；Windows 只看盘符类型（拒绝网络驱动器），不查 OneDrive 等同步目录。`claude_local_data.py audit` 只读元数据，在网络盘或同步目录上照常盘点，结果里注明 `network_or_synced_storage`；`backup` 仍然拒绝。
 
@@ -204,8 +209,8 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 
 ### 做过的
 
-- **跨平台离线单元测试**：全套 `test_*.py`（项数以运行结果为准），覆盖统一三态体检与可打印 HTML 渲染/转义、本地 MCP 桥接脱敏盘点、路由生成与校验、Windows 断网开关与 LAN DNS 规划器、配置快照安全边界、Android/iOS 规则静态校验、自动同步脚本在临时仓库里的同步、还原与隐私闸门、MIT 与零镜像回归检查、全仓 Markdown 相对链接与发布包断链检查，以及通过 Node.js 对 `docs/app.js` 与 Python `build_routing.py` / `build_kill_switch.py` 的一致性交叉对账（平台专属用例按运行环境显式跳过）。v0.4.1 在 Windows Python 3.13 与 Linux（WSL Ubuntu）Python 3 下跑过；v0.4.2 的改动只在 Linux 上用 Python 3.11、3.12、3.13 跑过全套，还没有在 Windows 上跑过。
-- **PowerShell 语法与逻辑核验**：所有 `.ps1` 脚本经解析与逻辑核查，确认 DHCP 漏填拦截与 PowerShell 5.1 严格模式空数组分支已修复；断网开关补集输出与 Python 规划器一致。v0.4.2 没有改 `.ps1`，已确认还没修的问题见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 末尾的「已知问题」。
+- **跨平台离线单元测试**：全套 `test_*.py`（项数以运行结果为准），覆盖统一三态体检与可打印 HTML 渲染/转义、本地 MCP 桥接脱敏盘点、路由生成与校验、Windows 断网开关与 LAN DNS 规划器、配置快照安全边界、Android/iOS 规则静态校验、自动同步脚本在临时仓库里的同步、还原与隐私闸门、MIT 与零镜像回归检查、全仓 Markdown 相对链接与发布包断链检查，以及通过 Node.js 对 `docs/app.js` 与 Python `build_routing.py` / `build_kill_switch.py` 的一致性交叉对账（平台专属用例按运行环境显式跳过）。v0.4.1 在 Windows Python 3.13 与 Linux（WSL Ubuntu）Python 3 下跑过；v0.4.2 的全套由 GitHub Actions 在 ubuntu-latest 的 Python 3.10、3.13 和 windows-latest 的 Python 3.13 上跑（以合并前最后一次 CI 结果为准），本地另在 Linux 上用 Python 3.11、3.12、3.13 跑过。CI 的 Windows 是英文系统，没有在中文（繁体或简体）Windows 上跑过；Windows 上的中文代码页、长路径、目录联接、大小写不敏感这几类情况，是在 Linux 上用模拟（改输出编码、打补丁）测的。
+- **PowerShell 语法与逻辑核验**：所有 `.ps1` 脚本经解析与逻辑核查，确认 DHCP 漏填拦截与 PowerShell 5.1 严格模式空数组分支已修复；断网开关补集输出与 Python 规划器一致。CI 的 windows-latest 上用 Windows PowerShell 5.1 解析全部 `.ps1`，并实际运行两个管理脚本的 `Preview`（和 Python 规划器对账）与验收脚本的一项参数检查；`Install`、`Remove`、`Status` 没有在 Windows 上运行过。v0.4.2 没有改 `.ps1`，已确认还没修的问题见 [WINDOWS-KILL-SWITCH.md](WINDOWS-KILL-SWITCH.md) 末尾的「已知问题」。
 - **本机四层无侵入实测与可视化核验**：在隔离临时目录下完成 CLI `2.1.330` 冷启动归零对照、MSIX 安装包离线静态拆检与 39 目标路由分流对账；v0.4.1 时用无头浏览器实拍核验了 `docs/index.html` 明暗主题与矢量图的渲染排版，v0.4.2 改过的页面和架构图没有在浏览器里重新看过。
 - **公开前隐私与历史核查**：公开前重建单提交干净历史，确认仓库工作区与 Git 历史中均无本机用户名路径、个人代理节点链接、第三方原文镜像或微信转发原文。
 
@@ -223,6 +228,8 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 ```bash
 python -B -m unittest discover -p "test_*.py" -v
 ```
+
+Windows 上写成 `py -3 -B -m unittest discover -p "test_*.py" -v`：python.org 的安装程序默认不把 `python` 加进 PATH，这时敲 `python` 会被系统自带的 Microsoft Store 别名接走。
 
 如果你要复用本仓库的本地自动同步与干净打包脚本，请参阅 [AUTO-UPDATE.md](AUTO-UPDATE.md)：默认只在本机提交、不推送（要推送必须加 `--push`），工作区不干净时拒绝运行，源目录里的新文件要用 `--allow-new` 点名，仓库里人工改过的文件不会被源目录悄悄覆盖；提交前照旧执行隐私与版权闸门（只是辅助检查）。脚本在 `tools/` 下，发布包里没有。
 

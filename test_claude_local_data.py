@@ -1,5 +1,5 @@
 from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 import json
 import os
 from pathlib import Path
@@ -232,6 +232,68 @@ class ClaudeLocalDataTests(unittest.TestCase):
         for name, settings in cases.items():
             with self.subTest(name=name):
                 self.assertBacksUp(settings)
+
+    def test_inline_secret_check_allows_powershell_and_cmd_references(self):
+        # Claude Code runs a hook with "shell": "powershell" in PowerShell; cmd /c expands %NAME%.
+        def hook(command, shell=None):
+            entry = {"type": "command", "command": command}
+            if shell:
+                entry["shell"] = shell
+            return {"hooks": {"Stop": [{"hooks": [entry]}]}}
+
+        cases = {
+            "PowerShell $env: in a header": hook(
+                'curl.exe -s -H "Authorization: Bearer $env:NTFY_TOKEN" https://ntfy.example.com/x', "powershell"),
+            "PowerShell $env: in a query": hook(
+                'Invoke-RestMethod "https://push.example.com/send?token=$env:PUSH_TOKEN&title=Claude"', "powershell"),
+            "PowerShell ${env:} and $Env:": hook(
+                'Invoke-RestMethod -Uri "https://push.example.com/?token=${env:PUSH_TOKEN}&key=$Env:PUSH_KEY"',
+                "powershell"),
+            "cmd %NAME% in a header": hook('cmd /c curl -s -H "Authorization: Bearer %NTFY_TOKEN%" https://x.example'),
+            "cmd %NAME% in a form field": hook('curl -s -d "token=%PUSH_TOKEN%&title=Claude" https://x.example'),
+            "cmd %NAME% after a flag": {"mcpServers": {"s": {"command": "cmd", "args": [
+                "/c", "npx", "-y", "example-mcp", "--api-key", "%EXAMPLE_API_KEY%", "--token=%EXAMPLE_TOKEN%"]}}},
+            "references as env values": {"env": {"API_TOKEN": "%API_TOKEN%", "GH_TOKEN": "$env:GH_TOKEN"}},
+        }
+        for name, settings in cases.items():
+            with self.subTest(name=name):
+                self.assertBacksUp(settings)
+        message = self.assertRefused(json.dumps(hook(
+            'curl.exe -H "Authorization: Bearer $env:NTFY_TOKEN" -d "token=plain-literal-0000"', "powershell")),
+            "user-config/settings.json: hooks.Stop[0].hooks[0].command")
+        self.assertNotIn("plain-literal", message)
+
+    def test_inline_secret_check_allows_search_patterns_prose_and_limits(self):
+        def hook(command):
+            return {"hooks": {"PreToolUse": [{"hooks": [{"type": "command", "command": command}]}]}}
+
+        cases = {
+            "grep alternation": hook("jq -r '.tool_input.command' | grep -qiE 'api_key=|token=|password=' && exit 2 || exit 0"),
+            "grep alternation in double quotes": hook('jq -r .tool_input.command | grep -E "password=|passwd="'),
+            "rg escape": hook("rg -n 'token=\\w+' ."),
+            "prose after Password:": hook("echo 'Password: not stored here' >&2"),
+            "prose after Token:": hook("echo 'Token: expired, run claude /login'"),
+            "prose after a header-like name": hook("echo 'X-Session-Secret: rotated weekly, see the wiki'"),
+            "a limit flag": {"statusLine": {"type": "command", "command": "npx -y example-statusline --token-limit=200000"}},
+            "limit and domain settings": {"env": {"TOKEN_LIMIT": "100000", "COOKIE_DOMAIN": "localhost",
+                                                  "MAX_PASSWORD_LENGTH": "64"}},
+        }
+        for name, settings in cases.items():
+            with self.subTest(name=name):
+                self.assertBacksUp(settings)
+        fake = "plain-literal-0000"
+        refused = {
+            "header option with several words": hook(f'curl -H "X-Session-Secret: {fake} extra" https://x.example'),
+            "long header option with several words": hook(f'wget --header="X-Session-Secret: {fake} extra" x.example'),
+            "credential header with several words": {"mcpServers": {"s": {"args": [
+                "--header", f"Cookie: theme=dark; sid={fake}"]}}},
+            "one word after Password:": hook(f"echo 'Password: {fake}'"),
+            "assignment": hook(f"API_TOKEN={fake} claude"),
+        }
+        for name, settings in refused.items():
+            with self.subTest(name=name):
+                message = self.assertRefused(json.dumps(settings), "Inline API keys")
+                self.assertNotIn(fake, message)
 
     def test_inline_secret_check_finds_token_keys_anywhere_and_more_forms(self):
         fake = "plain-literal-0000"
@@ -628,6 +690,53 @@ class ClaudeLocalDataTests(unittest.TestCase):
         with self.assertRaises(data.SnapshotError):
             data.recover(snapshot, self.recovery_path)
         self.assertFalse((self.root / "outside.txt").exists())
+
+    def test_snapshots_are_staged_at_the_length_of_their_published_path(self):
+        # Windows refuses paths over 260 characters unless long paths are enabled. A snapshot
+        # staged under a shorter name could verify there and fail to open once renamed.
+        self.seed(self.config / "projects" / "session.jsonl")
+        with patch.object(data, "verify", wraps=data.verify) as verified:
+            snapshot = data.backup(self.config, None, self.destination)
+        staged = verified.call_args_list[0].args[0]
+        self.assertNotEqual(staged, snapshot)
+        self.assertTrue(staged.name.startswith("."))
+        self.assertEqual(len(str(staged)), len(str(snapshot)))
+        self.assertEqual(sorted(path.name for path in self.destination.iterdir()), [snapshot.name])
+        with patch.object(data, "copy_tree", wraps=data.copy_tree) as copied:
+            recovered = data.recover(snapshot, self.recovery_path)
+        self.assertEqual(len(str(copied.call_args.args[1])), len(str(recovered)))
+        self.assertEqual(sorted(path.name for path in self.recovery_path.iterdir()), [recovered.name])
+
+    def test_long_windows_path_errors_say_so_without_the_path(self):
+        long_name = "C:\\Users\\example\\" + "private-session-" * 16
+        error = FileNotFoundError(2, "No such file or directory", long_name)
+        with patch.object(data, "_is_windows", return_value=True):
+            self.assertIn("260 characters", data._long_path_hint(error))
+            self.assertEqual(data._long_path_hint(FileNotFoundError(2, "x", "C:\\short")), "")
+            with redirect_stderr(StringIO()) as errors, patch.object(data, "backup", side_effect=error):
+                self.seed(self.config / "history.jsonl")
+                code = data.main(["backup", "--config-dir", str(self.config), "--destination", str(self.destination)])
+        self.assertEqual(code, 1)
+        self.assertIn("(FileNotFoundError). A path involved is", errors.getvalue())
+        self.assertNotIn("private-session", errors.getvalue())
+        with patch.object(data, "_is_windows", return_value=False):
+            self.assertEqual(data._long_path_hint(error), "")
+
+    def test_printed_paths_survive_an_output_encoding_without_their_characters(self):
+        # Redirected or piped output on Windows uses the ANSI code page; cp950 (Traditional
+        # Chinese) has no simplified characters such as 备.
+        destination = self.root / "备份"
+        destination.mkdir()
+        self.seed(self.config / "history.jsonl")
+        output = BytesIO()
+        stream = TextIOWrapper(output, encoding="cp950", errors="strict")
+        with patch("sys.stdout", stream):
+            code = data.main(["backup", "--config-dir", str(self.config), "--destination", str(destination)])
+            stream.flush()
+        self.assertEqual(code, 0)
+        self.assertIn(b"Verified local backup: ", output.getvalue())
+        self.assertIn(b"\\u5907", output.getvalue())
+        self.assertEqual(len(list(destination.iterdir())), 1)
 
     def test_errors_suppress_source_filenames(self):
         output = StringIO()

@@ -16,12 +16,14 @@ import importlib.util
 import io
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -398,6 +400,55 @@ class InProcessTests(SandboxTestCase):
         self.assertEqual(box.read("extra.py"), "MY OWN UNCOMMITTED WORK\n")
         self.assertEqual(box.read("kit.py"), "OK = True  # local edit\n")
 
+    def test_git_refusal_reason_is_shown_instead_of_not_a_working_tree(self):
+        # Git for Windows refuses a repository owned by another account (for example one cloned
+        # in an elevated window) unless it is listed in safe.directory; its message says how.
+        refusal = subprocess.CompletedProcess(
+            ["git"], 128, "",
+            "fatal: detected dubious ownership in repository at 'C:/kit'\n"
+            "To add an exception for this directory, call:\n\n"
+            "\tgit config --global --add safe.directory C:/kit\n")
+        args = self.mod.build_parser().parse_args([])
+        with mock.patch.object(self.mod, "git", return_value=refusal):
+            with self.assertRaises(self.mod.Refused) as caught:
+                self.mod.preflight(args)
+        message = str(caught.exception)
+        self.assertIn("detected dubious ownership", message)
+        self.assertIn("git config --global --add safe.directory C:/kit", message)
+        self.assertNotIn("is not a git working tree", message)
+        outside = subprocess.CompletedProcess(["git"], 0, "false\n", "")
+        with mock.patch.object(self.mod, "git", return_value=outside):
+            with self.assertRaises(self.mod.Refused) as caught:
+                self.mod.preflight(args)
+        self.assertIn("is not a git working tree", str(caught.exception))
+
+    def test_python_output_encoding_follows_pythonioencoding_then_the_locale(self):
+        with mock.patch.dict(os.environ, {"PYTHONIOENCODING": "cp950:backslashreplace"}):
+            self.assertEqual(self.mod.python_output_encoding(), "cp950")
+        with mock.patch.dict(os.environ, {"PYTHONIOENCODING": ""}), \
+                mock.patch.object(self.mod.locale, "getpreferredencoding", return_value="cp936"):
+            self.assertEqual(self.mod.python_output_encoding(), "cp936")
+
+    def test_windows_directory_junction_counts_as_a_linked_folder(self):
+        # os.path.islink() is False for a junction (mklink /J); os.lstat() reports its reparse tag.
+        box = self.box
+        write(box.source / "mobile" / "rules.json", '{"rules": [1]}\n')
+        junction = box.repo / "mobile"
+        real_lstat = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            if isinstance(path, (str, os.PathLike)) and Path(path) == junction:
+                return SimpleNamespace(st_mode=stat.S_IFDIR | 0o755,
+                                       st_reparse_tag=self.mod.IO_REPARSE_TAG_MOUNT_POINT)
+            return real_lstat(path, *args, **kwargs)
+
+        with mock.patch.object(self.mod.os, "lstat", side_effect=lstat), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(self.mod.Refused) as caught:
+                self.mod.plan_sync(box.source)
+        self.assertIn("mobile/rules.json  (a symbolic link or directory junction", str(caught.exception))
+        self.assertEqual(box.read("mobile/rules.json"), '{"rules": []}\n')
+
     def test_rollback_counts_only_what_it_put_back(self):
         touched = self.mod.Touched()
         touched.restore.append(Path("never-tracked.txt"))
@@ -406,6 +457,43 @@ class InProcessTests(SandboxTestCase):
             self.mod.undo_sync(touched)
         self.assertIn("restored 0 of 1 tracked file(s)", log.getvalue())
         self.assertIn("rollback: PROBLEM", log.getvalue())
+
+
+class ChildProcessOutputTests(SandboxTestCase):
+    def test_failing_test_output_is_read_in_the_encoding_python_writes_to_a_pipe(self):
+        # Python writes piped output in the locale encoding (cp950 on Traditional Chinese
+        # Windows); PYTHONIOENCODING stands in for that locale here on every platform.
+        box = self.box
+        box.commit_by_hand("test_zz_probe.py", (
+            "import unittest\n\n\n"
+            "class ProbeTests(unittest.TestCase):\n"
+            "    def test_probe(self):\n"
+            "        self.assertEqual('設定檔', '設定')\n"
+        ))
+        box.env["PYTHONIOENCODING"] = "cp950"
+        code, output = box.update("--no-sync")
+        self.assertEqual(code, 1, output)
+        self.assertIn("unit tests failed", output)
+        self.assertIn("'設定檔' != '設定'", output)
+
+
+class CaseOnlyRenameTests(SandboxTestCase):
+    def test_a_name_that_differs_only_in_letter_case_stops_the_sync(self):
+        box = self.box
+        os.rename(box.source / "kit.py", box.source / "Kit.py")
+        write(box.source / "Kit.py", "OK = True\nVERSION = 2\n")
+        head = box.head()
+        for extra in ((), ("--allow-new", "Kit.py")):
+            with self.subTest(extra=extra):
+                code, output = box.update(*extra)
+                self.assertEqual(code, 2, output)
+                self.assertIn("only in letter case", output)
+                self.assertIn("Kit.py  (tracked as kit.py)", output)
+                self.assertNotIn("would be deleted", output)
+                self.assertNotIn("already in the working tree", output)
+                self.assertEqual(box.head(), head)
+                self.assertEqual(box.read("kit.py"), "OK = True\n")
+                self.assertEqual(box.status(), "")
 
 
 class HandEditTests(SandboxTestCase):

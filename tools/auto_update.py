@@ -13,7 +13,10 @@ Protective rules:
 - A file the repository does not track yet is only added when named with --allow-new, and
   never over a file of that name that is already in the working tree.
 - The sync stops before writing when a file it would add, replace or delete is a symbolic
-  link (or sits in a linked folder), or differs in the working tree from the last commit.
+  link or Windows directory junction (or sits in a linked folder), or differs in the working
+  tree from the last commit.
+- A new file whose name differs from a tracked file only in letter case stops the sync:
+  Windows and macOS treat the two names as one file.
 - Local tool output and anything .gitignore ignores is never copied in.
 - Nothing is pushed unless --push is given.
 
@@ -25,9 +28,11 @@ import argparse
 import codecs
 import datetime
 import hashlib
+import locale
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import zipfile
@@ -111,6 +116,8 @@ BOMS = (
     (codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
     (codecs.BOM_UTF8, "utf-8-sig"), (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16"),
 )
+# Reparse tag of a Windows directory junction (mklink /J). The stat module only defines it on Windows.
+IO_REPARSE_TAG_MOUNT_POINT = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003)
 
 
 class Refused(Exception):
@@ -137,12 +144,29 @@ def log(message):
     print(f"[{datetime.datetime.now():%Y-%m-%d %H:%M:%S}] {message}", flush=True)
 
 
-def run(cmd, cwd=None, check=True, stdin=None):
+def run(cmd, cwd=None, check=True, stdin=None, encoding="utf-8"):
     result = subprocess.run(cmd, cwd=cwd or REPO, capture_output=True, text=True,
-                            encoding="utf-8", errors="replace", input=stdin)
+                            encoding=encoding, errors="replace", input=stdin)
     if check and result.returncode:
         raise RuntimeError(f"{' '.join(cmd)} failed:\n{result.stdout}\n{result.stderr}")
     return result
+
+
+def python_output_encoding():
+    """The encoding a child Python process started with this environment writes to a pipe.
+
+    Piped output is in the locale encoding (cp950 or cp936 on Chinese Windows), not UTF-8,
+    unless PYTHONIOENCODING or UTF-8 mode says otherwise. PYTHONIOENCODING is not set for the
+    child on purpose: the unit tests start Python processes of their own and read their output
+    in the locale encoding, and the variable would reach those processes too.
+    """
+    forced = os.environ.get("PYTHONIOENCODING", "").partition(":")[0].strip()
+    if forced:
+        try:
+            return codecs.lookup(forced).name
+        except LookupError:
+            pass
+    return locale.getpreferredencoding(False)
 
 
 def git(*args, check=True, stdin=None):
@@ -329,6 +353,16 @@ def plan_sync(source, allow_new=(), source_wins=False):
     new_names = sorted(wanted_names - set(tracked))
     ignored = ignored_by_git(new_names)
     plan.ignored = [name for name in new_names if name in ignored]
+    # Windows and macOS keep one file for names that differ only in letter case, so adding
+    # "Foo.ps1" and deleting "foo.ps1" would write a file and then delete it again.
+    tracked_folded = {}
+    for name in tracked:
+        tracked_folded.setdefault(name.casefold(), []).append(name)
+    case_only = [(name, old) for name in new_names if name not in ignored
+                 for old in tracked_folded.get(name.casefold(), ())]
+    case_new = {name for name, _ in case_only}
+    case_old = {old for _, old in case_only}
+    new_names = [name for name in new_names if name not in case_new]
     for name in allow_new:
         if name in ignored:
             raise Refused(f"--allow-new {name}: .gitignore ignores this path, so it can never be committed")
@@ -353,7 +387,7 @@ def plan_sync(source, allow_new=(), source_wins=False):
             continue
         plan.replace.append(rel)
     plan.remove = [Path(name) for name in sorted(tracked)
-                   if name not in wanted_names and in_sync_scope(Path(name))]
+                   if name not in wanted_names and name not in case_old and in_sync_scope(Path(name))]
 
     # git status can miss local edits (assume-unchanged, skip-worktree, untracked files
     # hidden by configuration), and copying onto a link writes to whatever it points to.
@@ -361,7 +395,7 @@ def plan_sync(source, allow_new=(), source_wins=False):
     for rel in plan.add + plan.replace + plan.remove:
         name = rel.as_posix()
         if involves_link(source, rel):
-            unsafe.append(f"{name}  (a symbolic link, or inside a linked folder)")
+            unsafe.append(f"{name}  (a symbolic link or directory junction, or inside a linked folder)")
         elif rel in plan.add:
             if os.path.lexists(REPO / rel):
                 unsafe.append(f"{name}  (already in the working tree, although git does not track it)")
@@ -372,8 +406,15 @@ def plan_sync(source, allow_new=(), source_wins=False):
     if not source_wins:
         conflicts += [f"{rel.as_posix()}  (would be overwritten)" for rel in plan.replace if changed_by_hand(rel.as_posix())]
         conflicts += [f"{rel.as_posix()}  (would be deleted)" for rel in plan.remove if changed_by_hand(rel.as_posix())]
-    if blocked or conflicts or unsafe:
+    if blocked or conflicts or unsafe or case_only:
         lines = ["sync stopped before changing anything."]
+        if case_only:
+            lines.append("  New files whose names differ from a tracked file only in letter case. Windows "
+                         "and macOS treat both names as one file, so the sync cannot add one and delete "
+                         "the other. If only the case changed, rename the file in the repository "
+                         "('git mv OLD NEW'), commit, then run again; otherwise rename it in the source "
+                         "directory:")
+            lines += [f"    {name}  (tracked as {old})" for name, old in case_only]
         if unsafe:
             lines.append("  Files the sync would write or delete but cannot do so safely. Sort them out "
                          "by hand ('git status --untracked-files=all', 'git ls-files -v'), then run again:")
@@ -392,11 +433,20 @@ def plan_sync(source, allow_new=(), source_wins=False):
     return plan
 
 
+def is_link(path):
+    """True for a symbolic link, and for a Windows directory junction, which os.path.islink misses."""
+    try:
+        info = os.lstat(path)
+    except (OSError, ValueError):
+        return False
+    return stat.S_ISLNK(info.st_mode) or getattr(info, "st_reparse_tag", None) == IO_REPARSE_TAG_MOUNT_POINT
+
+
 def involves_link(source, rel):
-    """True when ``rel`` or a folder above it is a symbolic link in the source or the repository."""
+    """True when ``rel`` or a folder above it is a link or junction in the source or the repository."""
     for root in (source, REPO):
         for depth in range(1, len(rel.parts) + 1):
-            if os.path.islink(root.joinpath(*rel.parts[:depth])):
+            if is_link(root.joinpath(*rel.parts[:depth])):
                 return True
     return False
 
@@ -543,7 +593,8 @@ def privacy_gate():
 
 
 def unit_tests():
-    result = run([sys.executable, "-B", "-m", "unittest", "discover", "-p", "test_*.py", "-v"], check=False)
+    result = run([sys.executable, "-B", "-m", "unittest", "discover", "-p", "test_*.py", "-v"], check=False,
+                 encoding=python_output_encoding())
     lines = result.stderr.splitlines()
     summary = [line for line in lines if line.startswith(("Ran ", "OK", "FAILED"))]
     if result.returncode:
@@ -557,7 +608,8 @@ def unit_tests():
 
 def refresh_allowlists(directory):
     result = run([sys.executable, "-B", str(REPO / "refresh_allowlists.py"),
-                  "--output-directory", str(directory), "--max-age-hours", "168"], check=False)
+                  "--output-directory", str(directory), "--max-age-hours", "168"], check=False,
+                 encoding=python_output_encoding())
     tail = (result.stdout or result.stderr).strip().splitlines()[-1:] or [""]
     if result.returncode:
         log(f"allowlist preview: skipped (warning, not fatal): {tail[0]}")
@@ -688,6 +740,11 @@ def preflight(args):
     except OSError as error:
         raise Refused(f"git is not available: {error}")
     if inside.returncode or inside.stdout.strip() != "true":
+        # git's own message names the cause, e.g. "detected dubious ownership" with the
+        # safe.directory command to run when the folder belongs to another account.
+        reason = inside.stderr.strip()
+        if reason:
+            raise Refused(f"git cannot work in {REPO}; git says:\n  " + "\n  ".join(reason.splitlines()))
         raise Refused(f"{REPO} is not a git working tree")
     if git("rev-parse", "-q", "--verify", "HEAD", check=False).returncode:
         raise Refused("the repository has no commit yet; make the first commit by hand")

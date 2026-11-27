@@ -29,10 +29,10 @@
 本节在同一个窗口里直接调用脚本（`& .\Manage-WindowsKillSwitch.ps1`），Windows 默认的执行策略会拒绝运行脚本。每打开一个新窗口（包括后面的管理员窗口），先执行一次：
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 ```
 
-这一行只对当前窗口生效，关掉窗口就失效，不改系统设置。
+这一行只对当前窗口生效，关掉窗口就失效，不改系统设置。`-Force` 不能省：不加的话，Windows PowerShell 5.1 会先问一句是否更改执行策略，默认答案是“否”，直接按回车或者把下一行一起粘贴进去，策略都不会改，后面的 `& .\…` 照样被拒。
 
 ```powershell
 Get-NetAdapter -Physical -IncludeHidden | Select-Object Name, ifIndex, Status
@@ -67,7 +67,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Manage-WindowsKillSwit
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Manage-WindowsKillSwitch.ps1 -Action Status
 ```
 
-已经执行过 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` 的窗口里，也可以写成 `& .\Manage-WindowsKillSwitch.ps1 -Action Remove`。用 `-File` 调用时，多个网卡名不能用逗号写成数组，所以预览和安装请用上面 `& .\…` 加 `@settings` 的写法；`Remove` 不需要网卡参数，不受影响。
+已经执行过 `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force` 的窗口里，也可以写成 `& .\Manage-WindowsKillSwitch.ps1 -Action Remove`。用 `-File` 调用时，多个网卡名不能用逗号写成数组，所以预览和安装请用上面 `& .\…` 加 `@settings` 的写法；`Remove` 不需要网卡参数，不受影响。
 
 `Remove` 输出 `removed` 以后，再看 `Status` 输出里的 `ForeignOrUnexpectedRules` 是否为空，不为空时见[已知问题](#已知问题v042-未修)第 2 条。
 

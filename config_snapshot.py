@@ -47,6 +47,20 @@ def default_backup_root():
     return Path.home() / DEFAULT_BACKUP_DIR_NAME
 
 
+def tolerate_unencodable_output():
+    """Print characters the output encoding lacks as \\uXXXX instead of failing.
+
+    Redirected or piped output on Windows uses the ANSI code page (cp950 on Traditional
+    Chinese Windows), which has no simplified Chinese characters. Printing such a path
+    after a finished backup used to fail and report the backup as stopped.
+    """
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="backslashreplace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def describe_names(names, limit=5):
     """List a few entry names for an error message; repr() escapes control characters."""
     ordered = sorted(names)
@@ -693,6 +707,7 @@ def restore_snapshot(snapshot, target, *, apply=False, client_stopped=False):
 
 
 def main(argv=None):
+    tolerate_unencodable_output()
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
 

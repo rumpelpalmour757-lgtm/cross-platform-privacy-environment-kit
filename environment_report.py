@@ -134,6 +134,18 @@ def _as_count(value):
     return value
 
 
+MAX_LISTED_DNS_ROWS = 8
+
+
+def _dns_row_label(row):
+    """Name a Windows DNS row by address family and interface index (never by adapter name)."""
+    family = row.get("AddressFamily")
+    index = row.get("InterfaceIndex")
+    family = family if family in ("IPv4", "IPv6") else "?"
+    index = str(index) if isinstance(index, int) and not isinstance(index, bool) else "?"
+    return f"{family} #{index}"
+
+
 READ_STATE_TEXT = {
     "not_regular_file": "symbolic link or not a regular file",
     "too_large": "larger than the read limit",
@@ -418,15 +430,22 @@ def _evaluate_dns_check(network_data):
                 "fallback for every configured resolver; browser and app private DNS traffic remain unobserved.",
             )
         if rows:
+            strict_ids = {id(row) for row in strict_rows}
+            failing = [_dns_row_label(row) for row in rows if id(row) not in strict_ids]
+            named = ", ".join(failing[:MAX_LISTED_DNS_ROWS])
+            if len(failing) > MAX_LISTED_DNS_ROWS:
+                named += f" and {len(failing) - MAX_LISTED_DNS_ROWS} more"
             return _make_check(
                 "system_dns_observations",
                 "network",
                 "System DNS and encrypted transport",
                 "unknown",
                 "observed_local",
-                f"{len(rows) - len(strict_rows)} of {len(rows)} adapter resolver row(s) have resolvers without "
-                "strict OS-level DoH auto-upgrade; live proxy DoH, LAN port-53 guard status, and browser DNS "
-                "traffic are not verified statically.",
+                f"{len(failing)} of {len(rows)} adapter resolver row(s) have resolvers without "
+                f"strict OS-level DoH auto-upgrade: {named} (address family and interface index; "
+                "Get-DnsClientServerAddress lists them). Every row with resolvers counts, including tunnel, "
+                "virtual and disconnected adapters and IPv6 rows; live proxy DoH, LAN port-53 guard status, "
+                "and browser DNS traffic are not verified statically.",
             )
         return _make_check(
             "system_dns_observations",
@@ -1247,7 +1266,9 @@ def _write_text_safely(target_path, content):
     destination = _check_output_target(target_path)
     parent = destination.parent
     parent.mkdir(parents=True, exist_ok=True)
-    # mkstemp creates an unpredictable, owner-only (0600) file; the report keeps that mode.
+    # mkstemp creates an unpredictable file. On macOS and Linux it is owner-only (0600) and the
+    # report keeps that mode; on Windows the mode only sets the read-only flag, so the file gets
+    # the permissions of the folder it is written to.
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".part", dir=parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:

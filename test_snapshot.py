@@ -1,4 +1,4 @@
-from io import StringIO
+from io import BytesIO, StringIO, TextIOWrapper
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -97,6 +97,21 @@ class ConfigSnapshotTests(unittest.TestCase):
                 self.assertEqual(snapshots.main(["backup", "--config-dir", str(self.config)]), 0)
         snapshot, = (self.root / snapshots.DEFAULT_BACKUP_DIR_NAME).iterdir()
         self.assertEqual(snapshots.verify_snapshot(snapshot)[0], self.config)
+
+    def test_printed_paths_survive_an_output_encoding_without_their_characters(self):
+        # Redirected or piped output on Windows uses the ANSI code page; cp950 (Traditional
+        # Chinese) has no simplified characters such as 备. The snapshot is already made when
+        # its path is printed, so printing must not turn the run into a failure.
+        backup_root = self.root / "快照备份"
+        output = BytesIO()
+        stream = TextIOWrapper(output, encoding="cp950", errors="strict")
+        with patch("sys.stdout", stream):
+            code = snapshots.main(["backup", "--config-dir", str(self.config), "--backup-root", str(backup_root)])
+            stream.flush()
+        self.assertEqual(code, 0)
+        self.assertIn(b"Verified snapshot: ", output.getvalue())
+        self.assertIn(b"\\u5907", output.getvalue())
+        self.assertEqual(len(list(backup_root.iterdir())), 1)
 
     def test_entry_point_reports_runtime_errors_in_one_line(self):
         path = self.create()

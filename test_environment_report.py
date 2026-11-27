@@ -577,6 +577,25 @@ class EvidenceCompletenessTests(unittest.TestCase):
                 self.assertEqual(self._dns(rows)["status"], "unknown")
         self.assertIn("1 of 2", self._dns(cases["another adapter is plain"])["detail"])
 
+    def test_windows_dns_names_the_rows_that_kept_it_from_passing(self):
+        rows = [
+            {"InterfaceIndex": 40, "AddressFamily": "IPv4", "ResolverCount": 2, "AutoUpgradeCount": 2,
+             "AutoUpgradeWithFallback": 0},
+            {"InterfaceIndex": 40, "AddressFamily": "IPv6", "ResolverCount": 3, "AutoUpgradeCount": 0,
+             "AutoUpgradeWithFallback": 0},
+            {"InterfaceIndex": 12, "AddressFamily": "IPv4", "ResolverCount": 1, "AutoUpgradeCount": 0,
+             "AutoUpgradeWithFallback": 0},
+            {"InterfaceIndex": "<b>Wi-Fi</b>", "AddressFamily": True, "ResolverCount": 1},
+        ]
+        check = self._dns(rows)
+        self.assertEqual(check["status"], "unknown")
+        self.assertIn("3 of 4 adapter resolver row(s)", check["detail"])
+        self.assertIn("IPv6 #40, IPv4 #12, ? #?", check["detail"])
+        self.assertNotIn("IPv4 #40", check["detail"])
+        self.assertNotIn("Wi-Fi", check["detail"])
+        many = [dict(rows[2], InterfaceIndex=index) for index in range(10)]
+        self.assertIn("IPv4 #7 and 2 more", self._dns(many)["detail"])
+
     def _mcp(self, **bridges):
         return checks_by_id(boundary_report({"localMcpBridges": bridges}))["local_mcp_host_bridges"]
 

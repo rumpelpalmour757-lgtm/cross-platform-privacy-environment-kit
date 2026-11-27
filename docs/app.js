@@ -958,8 +958,8 @@
       // 和 WINDOWS-KILL-SWITCH.md 相同的写法：在同一个 PowerShell 会话里用 & 调用并展开 @settings。
       // 把哈希表展开传给 powershell.exe -File 这种外部程序时，多个网卡名和开关参数不能可靠地传进去。
       ksCmd = [
-        "# 每个新开的 PowerShell 窗口先执行一次（只对当前窗口生效，不改系统设置）",
-        "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass",
+        "# 每个新开的 PowerShell 窗口先执行一次（只对当前窗口生效，不改系统设置；-Force 免去 Windows PowerShell 5.1 的确认提问）",
+        "Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force",
         "",
         "$settings = @{",
         "  InterfaceAlias   = " + aliasPs,

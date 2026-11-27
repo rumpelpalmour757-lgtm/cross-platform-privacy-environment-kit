@@ -367,7 +367,9 @@ console.log(JSON.stringify({ previews: plans.map((p) => p.previewJson), counts: 
         self.assertNotIn("-Action Remove", cmds["lanCmd"])
         self.assertIn("-Action Remove", cmds["ksRemoveCmd"])
         self.assertIn("-Action Remove", cmds["lanRemoveCmd"])
-        self.assertIn("Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass", cmds["ksCmd"])
+        # Without -Force, Windows PowerShell 5.1 asks for confirmation (default No), and a pasted
+        # block would answer that prompt with its next line.
+        self.assertIn("Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force", cmds["ksCmd"])
         self.assertIn("& .\\Manage-WindowsKillSwitch.ps1 -Action Preview @settings", cmds["ksCmd"])
         self.assertNotIn("-File .\\Manage-WindowsKillSwitch.ps1 -Action Preview @settings", cmds["ksCmd"])
 
