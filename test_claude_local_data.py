@@ -304,6 +304,45 @@ class ClaudeLocalDataTests(unittest.TestCase):
                 message = self.assertRefused(json.dumps(settings), "Inline API keys")
                 self.assertNotIn(fake, message)
 
+    def test_inline_secret_check_reads_header_options_written_with_equals(self):
+        # --header=Name: value and -H=Name: value are one argument-list item, with no space
+        # after the option; they are read like the two-item form "--header", "Name: value".
+        fake = "plain-literal-0000"
+
+        def args(*items):
+            return {"mcpServers": {"s": {"command": "npx", "args": ["-y", "mcp-remote", *items]}}}
+
+        refused = {
+            "--header= with one word": (args(f"--header=X-Api-Key: {fake}"), "mcpServers.s.args[2]"),
+            "--header= without a space after the colon": (args(f"--header=X-Api-Key:{fake}"), "mcpServers.s.args[2]"),
+            "-H= with an auth scheme": (args("https://mcp.example.com/sse", f"-H=Authorization: Basic {fake}"),
+                                        "mcpServers.s.args[3]"),
+            "--header= with several words": (args(f"--header=X-Session-Secret: {fake} extra"), "mcpServers.s.args[2]"),
+            "-H= with a custom scheme": (args(f"-H=X-Custom-Auth: ApiKey {fake}"), "mcpServers.s.args[2]"),
+            "--header= cookie": (args(f"--header=Cookie: theme=dark; sid={fake}"), "mcpServers.s.args[2]"),
+            "--header= in a hook command": (
+                {"hooks": {"Stop": [{"hooks": [{"type": "command",
+                                                "command": f"curl -s --header=X-Api-Key:{fake} https://x.example"}]}]}},
+                "hooks.Stop[0].hooks[0].command"),
+        }
+        for name, (settings, key_path) in refused.items():
+            with self.subTest(name=name):
+                message = self.assertRefused(json.dumps(settings), f"user-config/settings.json: {key_path}")
+                self.assertNotIn(fake, message)
+        allowed = {
+            "ordinary headers": args("--header=Accept: application/json", "-H=User-Agent: example-hook/1.0",
+                                     "--header=X-Request-Id: 1234"),
+            "references": args("--header=Authorization: Bearer ${MCP_TOKEN}", "-H=X-Api-Key: %EXAMPLE_KEY%",
+                               "--header=X-Api-Key: $env:EXAMPLE_KEY", "--header=Authorization: Bearer $(example-keychain read)"),
+            "other options that only start like a header option": args("--header-file=./headers.txt",
+                                                                        "--help=Token: expired, run claude /login"),
+            "a header option with a reference in a hook command": {"hooks": {"Stop": [{"hooks": [{
+                "type": "command", "command": 'curl -s --header="Authorization: Bearer $NTFY_TOKEN" https://x.example'}]}]}},
+        }
+        for name, settings in allowed.items():
+            with self.subTest(name=name):
+                self.assertBacksUp(settings)
+
     def test_inline_secret_check_finds_token_keys_anywhere_and_more_forms(self):
         fake = "plain-literal-0000"
         cases = {

@@ -1,5 +1,38 @@
 # 版本记录
 
+## 未发布
+
+v0.4.2 以后合并、还没有发版的改动。这一节没有改任何 `.ps1` 脚本。
+
+### CI 和发布流程（`.github/workflows/`、`tools/ci/`）
+
+- `tests.yml`：ubuntu 的两个任务（Python 3.10、3.13）跑完全套以后，在“Windows 模拟”下再跑一遍全套：临时目录是指向真实目录的符号链接（像 Windows runner 临时目录的 8.3 短名，拿到的路径和解析以后的不一样），路径里有空格和中文（其中几个字 cp950 里没有）；交给子进程的文本输入和文本模式写的文件用 CRLF 换行；`~名字` 按 ntpath 的规则展开成家目录旁边的同名目录；输出编码 cp950。模拟用的 `tools/ci/sitecustomize.py` 只在这一步经 `PYTHONPATH` 加载，在 Windows 上什么都不做，不进发布包；先跑一遍自检，确认几样模拟确实生效。它只是近似：不改 `os.sep`、`sys.platform`、盘符、文件名大小写和路径长度规则，只能在 Windows 上跑的用例照旧跳过，真正的 Windows 结果仍看 windows-latest。拿 PR #1 当时在 Windows CI 上红过的两个提交（`439f2c0`、`087e96d`）试过：在本机原样跑全绿；在模拟下，Windows CI 上红过的那 4 项都红了，另外还红了两项后来已经修掉的问题（`config_snapshot.py` 打印路径遇到 cp950 里没有的字就报错，`087e96d` 修了；Linux 挂载表用例遇到带空格的临时路径不对，`80dc14d` 修了）。
+- `tests.yml`：Windows 任务在跑测试之前打印 Python、git、Node.js、PowerShell 7 和 Windows PowerShell 的版本，系统 ANSI/OEM 代码页和控制台代码页，Python 看到的编码，临时目录和它解析以后的路径。
+- `tests.yml` 新增 `archive` 任务：用和 `release.yml` 相同的 `git archive` 命令打包，解到带空格和中文的目录，在 ubuntu-latest 和 windows-latest 上各用 Python 3.13 跑一遍全套；先确认包里没有 `tools/`、`.github/`、`.gitattributes`、`docs/releases/`，日志里打印包内文件数和内容摘要，两种系统可以对照是不是同一份内容。包里没有 `tools/`，自动同步的用例在这个任务里显示为跳过。
+- `tests.yml` 可以手动运行（`workflow_dispatch`），给发布前补跑用。
+- `release.yml` 打包前查要打包的那个提交上“测试”工作流的结果：只认 push 和手动运行（pull request 测的是合并结果，不是这个提交本身）；这个提交上还有没跑完的就拒绝；取最近开始的一次，结论必须是 success，`tests` 的三个任务都在而且都是 success，`archive` 两项也要是 success。没有记录、还在跑、有任务没过都拒绝发布，什么都不建；重跑办法写在 `release.yml` 开头（Re-run all jobs；没有记录时在“测试”里 Run workflow，选指向这个提交的分支或标签）。工作流的权限加了 `actions: read`，用来读运行记录。
+- `test_public_release.py` 新增检查：`release.yml` 闸门里列的三个任务名和 `tests.yml` 的矩阵对得上，查测试结果在打包之前，`tests.yml` 可以手动运行。
+
+### 自动同步（`tools/auto_update.py`、`AUTO-UPDATE.md`）
+
+- 标准错误也设成 UTF-8（写不出的字符转义成 `\uXXXX` 这类写法）：参数解析出错的提示和脚本自己的记录编码一致，`>> 日志 2>&1` 写出来的日志不再混着两种编码。Python 打不开脚本（`can't open file`）的那一行在脚本运行之前写出，仍按系统代码页。`AUTO-UPDATE.md` 里日志编码的说明照改。
+- 新增测试：输出编码是 cp950 时，参数解析出错的提示按 UTF-8 写出，简体字不再变成 `\uXXXX`；在本进程里调用 `main()` 的那项测试同时接管标准错误，不再改动测试运行器自己的输出流。
+
+### 备份（`claude_local_data.py`）
+
+- 明文密钥检查：写成一项、不带空格的 `--header=名字: 值`、`-H=名字: 值`（`.mcp.json` 的参数列表里，以及 hook 或 statusLine 命令里）也按请求头查；以前只认 `--header`、`名字: 值` 分成两项，或中间是空格、引号的写法。判定和分开写的形式一致：`--header=Accept: application/json`、引用环境变量的值照旧不算，冒号后面是几个词的值跟在请求头选项后面照样算。
+- 新增测试：上面几种写法各一例（报错列出键路径、不打印值），以及几种不该报的写法。
+
+### 升级要注意
+
+- `claude_local_data.py`、`test_claude_local_data.py` 在本机源目录维护，这次直接在仓库里改了。用自动同步的，先把这两个文件拷回源目录，否则下一次同步会把它们列为人工改动并停下（见 [AUTO-UPDATE.md](AUTO-UPDATE.md) 的“仓库里人工改过的文件”）。其余改动的文件只在仓库里维护。
+
+### 没有验证的
+
+- 新加的 CI 步骤和任务（Windows 环境打印、Windows 模拟、`archive` 两项）和发布闸门，要推到 GitHub 上跑过才知道能不能跑通。本地只用 PyYAML 解析了两个工作流（这里没有 actionlint）；发布闸门那段脚本用假的 `gh` 和构造的运行记录试过 12 种情况（没有记录、只有 pull request 的运行、还在跑或排队、最近一次没过、重跑转绿、全绿、缺任务、任务被跳过、被取消、接口出错），没有调用过真的 GitHub API，也没有真的发过版。
+- 这里没有 Windows 和 PowerShell：Windows 那边新加的步骤，以及 `archive` 在 windows-latest 上把包解到中文目录里跑的那几项 PowerShell 测试，都没有跑过。
+- 本地在 Linux 上用 Python 3.10、3.13 跑过全套，原样和 Windows 模拟下各一遍；也照 `archive` 的做法把包解到带空格和中文的目录里跑过。
+
 ## v0.4.2（2026-11-27）— 自动同步默认不推送、体检与备份检查收紧、文档与脚本行为对齐
 
 > **升级前先看：自动同步的行为变了。** 默认不再推送，要推必须加 `--push`；工作区不干净时拒绝运行；源目录里的新文件要用 `--allow-new` 点名；仓库里人工改过的文件不会再被源目录悄悄覆盖。靠定时任务自动推送的，要自己改任务的命令行，详见 [AUTO-UPDATE.md](AUTO-UPDATE.md)。这一版没有改任何 `.ps1` 脚本。

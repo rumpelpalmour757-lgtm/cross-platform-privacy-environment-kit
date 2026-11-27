@@ -1,6 +1,18 @@
 # 建立 GitHub 发布版本（Releases）。
 # 用法：先在 docs/releases/ 下放一份 <标签>.md（第一行是标题，# 开头；其余是发布说明）并推到 main，
-# 然后在 Actions 页手动运行这个工作流，填上标签（例如 v0.4.0）。
+# 等“测试”工作流在这个提交上跑完、全绿，然后在 Actions 页手动运行这个工作流，填上标签（例如 v0.4.0）。
+#
+# 测试闸门：打包前查要打包的那个提交（标签已存在时是标签指向的提交，否则是运行这个工作流的提交）
+# 上“测试”工作流的结果，只认 push 和手动运行（这两种测的就是这个提交本身；pull request 测的是合并结果）。
+# 取最近开始的那一次运行：它必须已经跑完、结论是 success，tests 的三个任务都在而且都是 success，
+# 其余任务（发布包两项）也都是 success。没有记录、还在跑、有任务没过，都拒绝发布，什么都不建。
+# 被拒以后怎样重跑：
+#   - 还在跑：等它跑完、全绿，再运行这个工作流。
+#   - 有任务没过：在 Actions 页打开那次“测试”运行，点 Re-run all jobs（或 gh run rerun <运行编号>）；
+#     是测试真的坏了就先修好再推。全绿以后再运行这个工作流。
+#   - 没有记录（这个提交不是某次推送的最后一个提交，或者标签指向旧提交）：在 Actions 页的“测试”里点
+#     Run workflow，分支或标签选指向这个提交的那个（或 gh workflow run tests.yml --ref <分支或标签>），
+#     全绿以后再运行这个工作流。
 name: 发布版本
 on:
   workflow_dispatch:
@@ -14,6 +26,7 @@ on:
         default: false
 permissions:
   contents: write
+  actions: read
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -22,7 +35,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: 核对发布说明，生成附件
+      - name: 核对标签和发布说明，确定要打包的提交
         env:
           TAG: ${{ inputs.tag }}
         run: |
@@ -37,12 +50,65 @@ jobs:
             ref="$GITHUB_SHA"
           fi
           echo "打包用的提交：$ref"
+          echo "$ref" > "$RUNNER_TEMP/ref.txt"
+
+      - name: 查测试结果（要打包的提交上“测试”必须全绿）
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          ref="$(cat "$RUNNER_TEMP/ref.txt")"
+          # tests.yml 里 tests 任务的三个名字；那边改了名字，这里要一起改。
+          required=("ubuntu-latest，Python 3.10" "ubuntu-latest，Python 3.13" "windows-latest，Python 3.13")
+          how="重跑办法见 .github/workflows/release.yml 开头的说明。"
+          # 这个提交上的 push 和手动运行，按开始时间从早到晚，一行一次：编号、状态、结论、网址。
+          runs="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs" \
+            -f head_sha="$ref" -F per_page=100 \
+            --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")]
+                  | sort_by(.run_started_at // .created_at) | .[]
+                  | [.id, .status, (.conclusion // "none"), .html_url] | @tsv')"
+          if [ -z "$runs" ]; then
+            echo "拒绝发布：提交 $ref 上没有“测试”工作流的 push 或手动运行记录。$how"; exit 1
+          fi
+          printf '%s\n' "$runs" | sed 's/^/  /'
+          if awk -F'\t' '$2 != "completed" { found = 1 } END { exit !found }' <<< "$runs"; then
+            echo "拒绝发布：这个提交上还有没跑完的“测试”。$how"; exit 1
+          fi
+          IFS=$'\t' read -r run_id status conclusion url <<< "$(tail -n 1 <<< "$runs")"
+          echo "取最近开始的一次：$url（结论 $conclusion）"
+          if [ "$conclusion" != "success" ]; then
+            echo "拒绝发布：这次“测试”的结论是 $conclusion，不是 success。$how"; exit 1
+          fi
+          jobs="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/jobs" -F per_page=100 \
+            --jq '.jobs[] | [.name, (.conclusion // .status)] | @tsv')"
+          printf '%s\n' "$jobs" | sed 's/^/  /'
+          bad=0
+          for name in "${required[@]}"; do
+            if ! grep -qxF "$name"$'\t'"success" <<< "$jobs"; then
+              echo "拒绝发布：任务“$name”不在这次运行里或没有通过。"; bad=1
+            fi
+          done
+          while IFS=$'\t' read -r name result; do
+            if [ -n "$name" ] && [ "$result" != "success" ]; then
+              echo "拒绝发布：任务“$name”的结果是 $result。"; bad=1
+            fi
+          done <<< "$jobs"
+          if [ "$bad" -ne 0 ]; then
+            echo "$how"; exit 1
+          fi
+          echo "测试闸门通过：提交 $ref 上“测试”的全部任务都是 success。"
+
+      - name: 生成附件
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          ref="$(cat "$RUNNER_TEMP/ref.txt")"
           mkdir -p "$RUNNER_TEMP/assets"
           git archive --format=zip --prefix="cross-platform-privacy-environment-kit-$TAG/" -o "$RUNNER_TEMP/assets/cross-platform-privacy-environment-kit-$TAG.zip" "$ref"
           git show "$ref:LICENSE" > "$RUNNER_TEMP/assets/LICENSE"
           git show "$ref:THIRD-PARTY-NOTICES.md" > "$RUNNER_TEMP/assets/THIRD-PARTY-NOTICES.md"
           sha256sum "$RUNNER_TEMP"/assets/*
-          echo "$ref" > "$RUNNER_TEMP/ref.txt"
 
       - name: 建立或更新发布版本
         env:

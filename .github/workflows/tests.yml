@@ -1,14 +1,20 @@
-# 跑全部单元测试：push 和 pull request 时在 Linux 和 Windows 上自动验证。
-# 工具包要求 Python 3.10+。矩阵只有三种组合：ubuntu-latest 配 Python 3.10 和 3.13，windows-latest 只配 3.13。
+# 跑全部单元测试：push、pull request 和手动运行时在 Linux 和 Windows 上自动验证。
+# 工具包要求 Python 3.10+。tests 任务的矩阵只有三种组合：ubuntu-latest 配 Python 3.10 和 3.13，windows-latest 只配 3.13。
 # 没有 macOS，也不测 3.13 以后的版本；只能在 Windows 上跑的用例在 ubuntu 上会显示为跳过，只在 Linux 或 POSIX 上跑的两项在 windows 上会显示为跳过。
+# ubuntu 的两个任务跑完全套以后，再在“Windows 模拟”下跑一遍（做法和局限见 tools/ci/sitecustomize.py）；
+# archive 任务照 release.yml 的命令打发布包，解到带空格和中文的目录里，在 ubuntu 和 windows 上各跑一遍全套。
+# release.yml 发布前会查要打包的提交上这个工作流的结果：tests 的三个任务和 archive 都要是 success。
+# 手动运行（Actions 页的 Run workflow）是给发布前补跑用的，见 release.yml 开头的说明。
 name: 测试
 on:
   push:
   pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
   tests:
+    # 这个名字 release.yml 要用来认任务，改了要一起改那边的 required 列表。
     name: ${{ matrix.os }}，Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
@@ -31,5 +37,95 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
 
+      # 红了以后对照用：runner 的版本、代码页和临时目录（8.3 短名）会随镜像更新而变。
+      - name: 打印 Windows 运行环境
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          python --version
+          python -c "import sys; print(sys.executable)"
+          git --version
+          if (Get-Command node -ErrorAction SilentlyContinue) { "node $(node --version)" } else { 'node: not found (the docs/app.js cross-check tests will skip)' }
+          "pwsh $($PSVersionTable.PSVersion)"
+          $windowsPowerShell = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+          "Windows PowerShell $(& $windowsPowerShell -NoProfile -Command '$PSVersionTable.PSVersion.ToString()')"
+          $codePage = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage'
+          "code page: ANSI $($codePage.ACP), OEM $($codePage.OEMCP); console: $(chcp)"
+          python -c "import locale, sys; print('python: preferred encoding', locale.getpreferredencoding(False), '| stdout', sys.stdout.encoding)"
+          "TEMP=$env:TEMP"
+          "TMP=$env:TMP"
+          python -c "import os, tempfile; t = tempfile.gettempdir(); print('tempfile.gettempdir():', t); print('resolved:', os.path.realpath(t))"
+          exit 0
+
       - name: 跑全部单元测试
+        run: python -B -m unittest discover -p "test_*.py" -v
+
+      # 只在 ubuntu 上：打开几样 Windows 的行为再跑一遍全套。临时目录是指向真实目录的符号链接
+      # （像 Windows runner 临时目录的 8.3 短名，路径和 resolve() 以后的不一样），路径里有空格和中文
+      # （有几个字 cp950 里没有）；文本管道和文本写文件用 CRLF；"~名字" 按 ntpath 的规则展开；
+      # 输出编码 cp950（繁体中文 Windows 写管道和文件时的编码）。这只是近似，真正的 Windows 结果看 windows-latest。
+      - name: Windows 模拟下再跑一遍全套
+        if: runner.os == 'Linux'
+        env:
+          PYTHONPATH: ${{ github.workspace }}/tools/ci
+          WINSIM_STDIN_CRLF: "1"
+          WINSIM_OPEN_CRLF: "1"
+          WINSIM_EXPANDUSER: "1"
+          PYTHONIOENCODING: cp950
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          set -euo pipefail
+          base="$RUNNER_TEMP/Windows 模拟 临时 測試"
+          mkdir -p "$base/真实目录"
+          ln -sfn "$base/真实目录" "$base/链接 目录"
+          export TMPDIR="$base/链接 目录"
+          test -L "$TMPDIR"
+          python -B -c "import sitecustomize; sitecustomize.self_check()"
+          python -B -m unittest discover -p "test_*.py" -v
+
+  archive:
+    # 发布包里没有 tools/、docs/releases/、.github/ 和 .gitattributes（见 .gitattributes 的 export-ignore），
+    # 自动同步的用例和几项只在完整仓库里才有意义的检查在包里会显示为跳过。
+    name: 发布包，${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # 和 release.yml 用同一条 git archive 命令（标签换成 ci），解到带空格和中文的目录里。
+      # 用 Python 写，免得 Windows 的 Git Bash 转换中文路径；Windows 上输出编码是 cp1252，所以只打印 ASCII。
+      - name: 打包并解到带空格和中文的目录
+        shell: python
+        run: |
+          import hashlib, os, pathlib, subprocess, zipfile
+          temp = pathlib.Path(os.environ["RUNNER_TEMP"])
+          archive = temp / "cross-platform-privacy-environment-kit-ci.zip"
+          subprocess.run(["git", "archive", "--format=zip", "--prefix=cross-platform-privacy-environment-kit-ci/",
+                          "-o", str(archive), "HEAD"], check=True)
+          root = temp / "发布包 解压 測試" / "cross-platform-privacy-environment-kit-ci"
+          with zipfile.ZipFile(archive) as package:
+              package.extractall(root.parent)
+          for name in ("tools", ".github", ".gitattributes", "docs/releases"):
+              assert not (root / name).exists(), f"{name} should not be in the release ZIP"
+          # The file count and a digest of names and contents, to compare the ubuntu and windows packages.
+          files = sorted((path.relative_to(root).as_posix(), path) for path in root.rglob("*") if path.is_file())
+          digest = hashlib.sha256()
+          for name, path in files:
+              digest.update(name.encode("utf-8") + b"\0" + path.read_bytes() + b"\0")
+          print(f"zip sha256 {hashlib.sha256(archive.read_bytes()).hexdigest()}")
+          print(f"{len(files)} files, content sha256 {digest.hexdigest()}")
+
+      - name: 在解出来的目录里跑全部单元测试
+        working-directory: ${{ runner.temp }}/发布包 解压 測試/cross-platform-privacy-environment-kit-ci
         run: python -B -m unittest discover -p "test_*.py" -v

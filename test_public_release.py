@@ -215,6 +215,25 @@ class PublicReleaseTests(unittest.TestCase):
         ]
         self.assertEqual(relative, [], "Release notes must link to full repository URLs")
 
+    def test_release_gate_checks_the_test_jobs_tests_yml_defines_before_packaging(self):
+        """release.yml packages only after these jobs passed; a renamed job would block every release."""
+        workflows = REPO / ".github" / "workflows"
+        if not workflows.is_dir():
+            self.skipTest(".github is not part of the release archive")
+        tests_yml = (workflows / "tests.yml").read_text(encoding="utf-8")
+        release_yml = (workflows / "release.yml").read_text(encoding="utf-8")
+        template = re.search(r"^  tests:\n(?:    .*\n|\n)*?    name: (.+)$", tests_yml, re.MULTILINE).group(1)
+        combos = re.findall(r'- os: (\S+)\n\s+python: "([^"]+)"', tests_yml)
+        self.assertEqual(len(combos), 3, "tests.yml matrix changed; update the release gate too")
+        expected = sorted(
+            template.replace("${{ matrix.os }}", os_name).replace("${{ matrix.python }}", python)
+            for os_name, python in combos
+        )
+        required = re.search(r"^\s*required=\((.*)\)$", release_yml, re.MULTILINE).group(1)
+        self.assertEqual(sorted(re.findall(r'"([^"]+)"', required)), expected)
+        self.assertLess(release_yml.index("actions/workflows/tests.yml/runs"), release_yml.index("git archive"))
+        self.assertIn("workflow_dispatch:", tests_yml, "the gate's re-run instructions need a manual trigger")
+
     def test_public_text_does_not_cite_private_research_files(self):
         markers = ("research-reports", "随包研究资料")
         # Files that explain what was removed and why, plus the sync tooling and tests that guard it.
