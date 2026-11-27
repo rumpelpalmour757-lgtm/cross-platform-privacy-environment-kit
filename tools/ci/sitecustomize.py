@@ -12,8 +12,12 @@ Each behaviour has its own switch (set to 1 to turn it on):
 WINSIM_STDIN_CRLF  Text-mode input given to a child process (``subprocess.run(input=...,
                    text=True)``, ``Popen.communicate``) goes down the pipe with every "\\n"
                    turned into "\\r\\n", as the pipe's TextIOWrapper does on Windows.
-WINSIM_OPEN_CRLF   Files opened for writing in text mode with the default newline=None
-                   are written with "\\r\\n" line endings, as on Windows.
+WINSIM_OPEN_CRLF   Files opened write-only ("w", "a", "x") in text mode with the default
+                   newline=None are written with "\\r\\n" line endings, as on Windows.
+                   Read-write modes ("r+", "w+", "a+", and tempfile's text "w+") are left
+                   alone: newline="\\r\\n" would also change how they read, while Windows
+                   reads with universal newlines ("\\r\\n" comes back as "\\n"). So these
+                   files get "\\n" line endings here; their writes are not simulated.
 WINSIM_EXPANDUSER  "~name" follows ntpath's rule: a folder called "name" next to the home
                    folder, instead of the passwd lookup (or the error for an unknown user)
                    on POSIX. Covers os.path.expanduser and pathlib's Path.expanduser.
@@ -70,7 +74,8 @@ if _on("WINSIM_OPEN_CRLF"):
         # class attribute, where a plain function would be bound as a method.
         def __call__(self, file, mode="r", buffering=-1, encoding=None, errors=None, newline=None,
                      closefd=True, opener=None):
-            if "b" not in mode and any(flag in mode for flag in "wax+") and newline is None:
+            # Write-only text modes only; see WINSIM_OPEN_CRLF above for why "+" is left alone.
+            if newline is None and "b" not in mode and "+" not in mode and any(flag in mode for flag in "wax"):
                 newline = "\r\n"
             return _open(file, mode, buffering, encoding, errors, newline, closefd, opener)
 
@@ -140,6 +145,13 @@ def self_check():
         print("text file bytes:", written)
         if written != b"a\r\nb\r\n":
             problems.append("text-mode file writes are not CRLF")
+        with tempfile.TemporaryFile("w+", encoding="utf-8") as handle:
+            handle.write("a\nb\n")
+            handle.seek(0)
+            read_back = handle.readlines()
+        print('"w+" text file read back:', read_back)
+        if read_back != ["a\n", "b\n"]:
+            problems.append('a "+" text file does not read back "\\n" lines as on Windows')
     if "WINSIM_EXPANDUSER" in active:
         guessed = os.path.expanduser("~winsim-nobody/x")
         try:

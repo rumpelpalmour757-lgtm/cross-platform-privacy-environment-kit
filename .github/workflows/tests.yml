@@ -63,7 +63,7 @@ jobs:
 
       # 只在 ubuntu 上：打开几样 Windows 的行为再跑一遍全套。临时目录是指向真实目录的符号链接
       # （像 Windows runner 临时目录的 8.3 短名，路径和 resolve() 以后的不一样），路径里有空格和中文
-      # （有几个字 cp950 里没有）；文本管道和文本写文件用 CRLF；"~名字" 按 ntpath 的规则展开；
+      # （有几个字 cp950 里没有）；文本管道和只写模式的文本文件用 CRLF；"~名字" 按 ntpath 的规则展开；
       # 输出编码 cp950（繁体中文 Windows 写管道和文件时的编码）。这只是近似，真正的 Windows 结果看 windows-latest。
       - name: Windows 模拟下再跑一遍全套
         if: runner.os == 'Linux'
