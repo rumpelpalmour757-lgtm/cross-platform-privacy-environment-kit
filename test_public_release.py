@@ -313,15 +313,16 @@ class PublicReleaseTests(unittest.TestCase):
         self.assertEqual(relative, [], "Release notes must link to full repository URLs")
 
     def test_release_gate_checks_the_test_jobs_tests_yml_defines_before_packaging(self):
-        """release.yml packages only after these jobs passed; a renamed job would block every release."""
+        """release.yml packages only after the tests and archive jobs passed; a renamed job would block every release."""
         if not WORKFLOWS.is_dir():
             self.skipTest(".github is not part of the release archive")
         tests_yml = (WORKFLOWS / "tests.yml").read_text(encoding="utf-8")
         release_yml = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
-        tests_names, _archive_names = _test_workflow_job_names()
+        tests_names, archive_names = _test_workflow_job_names()
         self.assertEqual(len(tests_names), 3, "tests.yml matrix changed; update the release gate too")
+        self.assertEqual(len(archive_names), 2, "tests.yml archive matrix changed; update the release gate too")
         required = re.search(r"^\s*required=\(([^)]*)\)", release_yml, re.MULTILINE).group(1)
-        self.assertEqual(sorted(re.findall(r'"([^"]+)"', required)), sorted(tests_names))
+        self.assertEqual(sorted(re.findall(r'"([^"]+)"', required)), sorted(tests_names + archive_names))
         self.assertLess(release_yml.index("actions/workflows/tests.yml/runs"), release_yml.index("git archive"))
         self.assertIn("workflow_dispatch:", tests_yml, "the gate's re-run instructions need a manual trigger")
 
@@ -716,11 +717,19 @@ class ReleaseGateScriptTests(unittest.TestCase):
 
     def test_every_listed_job_must_be_in_the_run(self):
         runs = [_gate_run(1, "push", "2026-11-27T01:00:00Z")]
-        for missing in self.tests_names:
+        for missing in self.names:
             with self.subTest(missing):
                 # Renamed rather than dropped, so every job in the run is still a success.
                 jobs = [(name + "（改名）" if name == missing else name, "success") for name in self.names]
                 self.assert_refuses(runs, {1: jobs}, f"任务“{missing}”不在这次运行里或没有通过")
+
+    def test_a_run_without_the_archive_jobs_refuses(self):
+        # A commit from before the archive job, or a tests.yml that dropped it: only the test jobs ran.
+        runs = [_gate_run(1, "push", "2026-11-27T01:00:00Z")]
+        jobs = [(name, "success") for name in self.tests_names]
+        for name in self.archive_names:
+            with self.subTest(name):
+                self.assert_refuses(runs, {1: jobs}, f"任务“{name}”不在这次运行里或没有通过")
 
     def test_every_job_in_the_run_must_succeed(self):
         runs = [_gate_run(1, "push", "2026-11-27T01:00:00Z")]

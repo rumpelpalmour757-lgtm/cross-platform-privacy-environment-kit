@@ -3,7 +3,7 @@
 # 没有 macOS，也不测 3.13 以后的版本；只能在 Windows 上跑的用例在 ubuntu 上会显示为跳过，只在 Linux 或 POSIX 上跑的两项在 windows 上会显示为跳过。
 # ubuntu 的两个任务跑完全套以后，再在“Windows 模拟”下跑一遍（做法和局限见 tools/ci/sitecustomize.py）；
 # archive 任务照 release.yml 的命令打发布包，解到带空格和中文的目录里，在 ubuntu 和 windows 上各跑一遍全套。
-# release.yml 发布前会查要打包的提交上这个工作流的结果：tests 的三个任务和 archive 都要是 success。
+# release.yml 发布前会查要打包的提交上这个工作流的结果：tests 的三个任务和 archive 的两个任务都要在、都要是 success。
 # 手动运行（Actions 页的 Run workflow）是给发布前补跑用的，见 release.yml 开头的说明。
 name: 测试
 on:
@@ -85,6 +85,7 @@ jobs:
           python -B -m unittest discover -p "test_*.py" -v
 
   archive:
+    # 这个名字 release.yml 也要用来认任务，改了要一起改那边的 required 列表。
     # 发布包里没有 tools/、docs/releases/、.github/ 和 .gitattributes（见 .gitattributes 的 export-ignore），
     # 自动同步的用例和几项只在完整仓库里才有意义的检查在包里会显示为跳过。
     name: 发布包，${{ matrix.os }}

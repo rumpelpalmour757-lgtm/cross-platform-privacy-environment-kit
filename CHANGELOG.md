@@ -10,9 +10,9 @@ v0.4.2 以后合并、还没有发版的改动。这一节没有改任何 `.ps1`
 - `tests.yml`：Windows 任务在跑测试之前打印 Python、git、Node.js、PowerShell 7 和 Windows PowerShell 的版本，系统 ANSI/OEM 代码页和控制台代码页，Python 看到的编码，临时目录和它解析以后的路径。
 - `tests.yml` 新增 `archive` 任务：用和 `release.yml` 相同的 `git archive` 命令打包，解到带空格和中文的目录，在 ubuntu-latest 和 windows-latest 上各用 Python 3.13 跑一遍全套；先确认包里没有 `tools/`、`.github/`、`.gitattributes`、`docs/releases/`，日志里打印包内文件数和内容摘要，两种系统可以对照是不是同一份内容。包里没有 `tools/`，自动同步的用例在这个任务里显示为跳过。
 - `tests.yml` 可以手动运行（`workflow_dispatch`），给发布前补跑用。
-- `release.yml` 打包前查要打包的那个提交上“测试”工作流的结果：只认 push 和手动运行（pull request 测的是合并结果，不是这个提交本身）；这个提交上还有没跑完的就拒绝；取最近开始的一次，结论必须是 success，`tests` 的三个任务都在而且都是 success，`archive` 两项也要是 success。没有记录、还在跑、有任务没过都拒绝发布，什么都不建；重跑办法写在 `release.yml` 开头（Re-run all jobs；没有记录时在“测试”里 Run workflow，选指向这个提交的分支或标签）。工作流的权限加了 `actions: read`，用来读运行记录。
-- `test_public_release.py` 新增检查：`release.yml` 闸门里列的三个任务名和 `tests.yml` 的矩阵对得上，查测试结果在打包之前，`tests.yml` 可以手动运行。
-- `test_public_release.py` 新增发布闸门的行为测试：从 `release.yml` 里取出“查测试结果”那一步的脚本原样运行，`gh` 换成假的（按构造的运行记录回答，`--jq` 的过滤式交给 jq），试全绿、重跑转绿、没有记录、别的提交上的运行、只有 pull request 的运行、最近一次没过、还在跑或排队、结论不是 success、少了任务、有任务没过或被跳过、接口出错，核对退出码和拒绝的原因。闸门里的每一项检查（只认 push 和手动运行、按提交查、取最近开始的一次、没跑完就拒绝、结论必须是 success、逐个任务查）改松了，都有用例变红。只在 Linux 上跑（发布工作流跑在 ubuntu-latest），没有 bash 或 jq 时跳过，在 GitHub Actions 上缺了就报错、不跳过；发布包里没有 `.github/`，在包里显示为跳过。
+- `release.yml` 打包前查要打包的那个提交上“测试”工作流的结果：只认 push 和手动运行（pull request 测的是合并结果，不是这个提交本身）；这个提交上还有没跑完的就拒绝；取最近开始的一次，结论必须是 success，`tests` 的三个任务和 `archive` 的两个任务都要在、都要是 success（这次运行里另有别的任务的，也要是 success）。没有记录、还在跑、少了任务、有任务没过都拒绝发布，什么都不建；加 `archive` 任务以前的提交（v0.4.2 和更早）上没有发布包两项，用这个工作流发不了；重跑办法写在 `release.yml` 开头（Re-run all jobs；没有记录时在“测试”里 Run workflow，选指向这个提交的分支或标签）。工作流的权限加了 `actions: read`，用来读运行记录。
+- `test_public_release.py` 新增检查：`release.yml` 闸门里列的五个任务名（`tests` 三个、`archive` 两个）和 `tests.yml` 的矩阵对得上，查测试结果在打包之前，`tests.yml` 可以手动运行。
+- `test_public_release.py` 新增发布闸门的行为测试：从 `release.yml` 里取出“查测试结果”那一步的脚本原样运行，`gh` 换成假的（按构造的运行记录回答，`--jq` 的过滤式交给 jq），试全绿、重跑转绿、没有记录、别的提交上的运行、只有 pull request 的运行、最近一次没过、还在跑或排队、结论不是 success、少了任务（包括整次运行里没有发布包两项）、有任务没过或被跳过、接口出错，核对退出码和拒绝的原因。闸门里的每一项检查（只认 push 和手动运行、按提交查、取最近开始的一次、没跑完就拒绝、结论必须是 success、逐个任务查）改松了，都有用例变红。只在 Linux 上跑（发布工作流跑在 ubuntu-latest），没有 bash 或 jq 时跳过，在 GitHub Actions 上缺了就报错、不跳过；发布包里没有 `.github/`，在包里显示为跳过。
 
 ### 自动同步（`tools/auto_update.py`、`AUTO-UPDATE.md`）
 

@@ -4,8 +4,9 @@
 #
 # 测试闸门：打包前查要打包的那个提交（标签已存在时是标签指向的提交，否则是运行这个工作流的提交）
 # 上“测试”工作流的结果，只认 push 和手动运行（这两种测的就是这个提交本身；pull request 测的是合并结果）。
-# 取最近开始的那一次运行：它必须已经跑完、结论是 success，tests 的三个任务都在而且都是 success，
-# 其余任务（发布包两项）也都是 success。没有记录、还在跑、有任务没过，都拒绝发布，什么都不建。
+# 取最近开始的那一次运行：它必须已经跑完、结论是 success，tests 的三个任务和 archive 的两个任务（发布包两项）
+# 都在而且都是 success，这次运行里另有别的任务的也都要是 success。没有记录、还在跑、少了任务、有任务没过，
+# 都拒绝发布，什么都不建。加 archive 任务以前的提交（v0.4.2 和更早的标签）上没有发布包两项，这个工作流发不了。
 # 被拒以后怎样重跑：
 #   - 还在跑：等它跑完、全绿，再运行这个工作流。
 #   - 有任务没过：在 Actions 页打开那次“测试”运行，点 Re-run all jobs（或 gh run rerun <运行编号>）；
@@ -13,6 +14,8 @@
 #   - 没有记录（这个提交不是某次推送的最后一个提交，或者标签指向旧提交）：在 Actions 页的“测试”里点
 #     Run workflow，分支或标签选指向这个提交的那个（或 gh workflow run tests.yml --ref <分支或标签>），
 #     全绿以后再运行这个工作流。
+#   - 少了任务：tests.yml 里任务改了名字，就把下面 required 列表照着改；要打包的提交早于 archive 任务，
+#     重跑也补不出发布包两项，这个工作流发不了（已经发布的旧版本，标题和说明可以在网页上直接改）。
 name: 发布版本
 on:
   workflow_dispatch:
@@ -58,8 +61,9 @@ jobs:
         run: |
           set -euo pipefail
           ref="$(cat "$RUNNER_TEMP/ref.txt")"
-          # tests.yml 里 tests 任务的三个名字；那边改了名字，这里要一起改。
-          required=("ubuntu-latest，Python 3.10" "ubuntu-latest，Python 3.13" "windows-latest，Python 3.13")
+          # tests.yml 里 tests 任务的三个名字和 archive 任务的两个名字；那边改了名字，这里要一起改。
+          required=("ubuntu-latest，Python 3.10" "ubuntu-latest，Python 3.13" "windows-latest，Python 3.13"
+                    "发布包，ubuntu-latest" "发布包，windows-latest")
           how="重跑办法见 .github/workflows/release.yml 开头的说明。"
           # 这个提交上的 push 和手动运行，按开始时间从早到晚，一行一次：编号、状态、结论、网址。
           runs="$(gh api -X GET "repos/$GITHUB_REPOSITORY/actions/workflows/tests.yml/runs" \
