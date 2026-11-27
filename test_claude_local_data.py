@@ -277,6 +277,10 @@ class ClaudeLocalDataTests(unittest.TestCase):
             "a limit flag": {"statusLine": {"type": "command", "command": "npx -y example-statusline --token-limit=200000"}},
             "limit and domain settings": {"env": {"TOKEN_LIMIT": "100000", "COOKIE_DOMAIN": "localhost",
                                                   "MAX_PASSWORD_LENGTH": "64"}},
+            "prose in an argument list": {"mcpServers": {"s": {"command": "echo", "args": [
+                "Password: not stored here"]}}},
+            "ordinary header after a separate --header item": {"mcpServers": {"s": {"args": [
+                "--header", "Accept: application/json"]}}},
         }
         for name, settings in cases.items():
             with self.subTest(name=name):
@@ -287,6 +291,11 @@ class ClaudeLocalDataTests(unittest.TestCase):
             "long header option with several words": hook(f'wget --header="X-Session-Secret: {fake} extra" x.example'),
             "credential header with several words": {"mcpServers": {"s": {"args": [
                 "--header", f"Cookie: theme=dark; sid={fake}"]}}},
+            # In an argument list the option and its "Name: value" are separate items.
+            "several words after a separate --header item": {"mcpServers": {"s": {"args": [
+                "mcp-remote", "https://mcp.example.com/sse", "--header", f"X-Session-Secret: {fake} extra"]}}},
+            "custom scheme after a separate -H item": {"mcpServers": {"s": {"args": [
+                "-H", f"X-Custom-Auth: ApiKey {fake}"]}}},
             "one word after Password:": hook(f"echo 'Password: {fake}'"),
             "assignment": hook(f"API_TOKEN={fake} claude"),
         }
@@ -457,7 +466,12 @@ class ClaudeLocalDataTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform.startswith("linux"), "Linux mount table")
     def test_audit_runs_on_network_storage_and_says_so_while_backup_refuses(self):
         self.seed(self.config / "history.jsonl")
-        mounts = f"/dev/sda1 / ext4 rw 0 0\nserver:/export {self.root} nfs4 rw 0 0\n"
+        # Written the way the kernel writes /proc/mounts: space, tab, newline and backslash as
+        # octal escapes, so a temporary folder with a space in its name stays one field.
+        mount_point = str(self.root)
+        for character in "\\ \t\n":
+            mount_point = mount_point.replace(character, f"\\{ord(character):03o}")
+        mounts = f"/dev/sda1 / ext4 rw 0 0\nserver:/export {mount_point} nfs4 rw 0 0\n"
         with patch.object(config_snapshot, "_read_proc_mounts", return_value=mounts):
             with redirect_stdout(StringIO()) as output:
                 self.assertEqual(data.main(["audit", "--config-dir", str(self.config)]), 0)

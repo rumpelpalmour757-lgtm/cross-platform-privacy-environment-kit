@@ -249,7 +249,11 @@ def _find_inline_secrets(document):
                 if isinstance(item, str):
                     flag = FLAG_PATTERN.match(item)
                     following = node[index + 1] if index + 1 < len(node) else None
-                    if _string_has_secret(item):
+                    previous = node[index - 1] if index else None
+                    # An item right after -H or --header is that option's "Name: value", so it is
+                    # checked as a header value even when the value has several words.
+                    after_header_flag = isinstance(previous, str) and previous.casefold() in HEADER_FLAGS
+                    if _string_has_secret(item) or (after_header_flag and _string_has_secret(f"{previous} {item}")):
                         findings.append(item_path)
                     elif (
                         flag and _secret_named(flag.group(1), broad=True) and isinstance(following, str)

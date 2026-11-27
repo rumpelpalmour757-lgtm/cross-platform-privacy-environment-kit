@@ -125,9 +125,7 @@ class PublicReleaseTests(unittest.TestCase):
 
     def test_markdown_relative_links_resolve(self):
         broken = []
-        for md in sorted(REPO.rglob("*.md")):
-            if ".git" in md.parts:
-                continue
+        for md in _markdown_files():
             text = md.read_text(encoding="utf-8")
             text = re.sub(r"```[\s\S]*?```", "", text)
             for match in MARKDOWN_LINK.finditer(text):
@@ -406,6 +404,17 @@ console.log(JSON.stringify(results));
             (root / "ok.py").write_text("pass\n", encoding="utf-8")
             rels = [p.as_posix() for p in mod.kit_files(root, skip_repo_only=True)]
             self.assertEqual(rels, ["ok.py"])
+        # The gate reads what git tracks or would add. When git refuses this folder (for example
+        # "detected dubious ownership" for a clone made in an administrator window), the gate falls
+        # back to every file in the folder, ignored local ones such as .venv included. The sync
+        # itself stops before that, so this check only runs where git lists the folder.
+        if shutil.which("git") is None:
+            self.skipTest("git is not installed")
+        listing = subprocess.run(["git", "--literal-pathspecs", "ls-files", "-co", "--exclude-standard", "-z"],
+                                 cwd=REPO, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if listing.returncode:
+            message = (listing.stderr.strip().splitlines() or ["no message"])[0]
+            self.skipTest(f"git does not list this folder: {message}")
         mod.privacy_gate()
 
     def test_release_version_and_offline_html_report_consistency(self):

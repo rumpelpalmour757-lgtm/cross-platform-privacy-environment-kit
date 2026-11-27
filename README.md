@@ -170,7 +170,7 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 
 - `--destination` 指向的目录要事先建好，而且只有你自己能访问；不存在时报 `The destination directory does not exist.`。`recover` 恢复到一个新目录，可以直接选放快照的那个目录，但不能选快照里面。
 - Windows 默认不支持超过 260 个字符的路径。Claude Code 按项目路径给会话目录起名，名字本来就长，再放进快照目录后可能超长，这时备份或恢复会停下并提示路径过长（快照在发布前按最终路径的长度校验过，不会出现“备份报成功、事后打不开”）。把 `--destination` 选在短一点的位置（如 `D:\cb`），或者开启长路径支持：python.org 安装程序最后一页的 “Disable path length limit”，或把注册表里的 `LongPathsEnabled` 设为 1。
-- 备份前对 `settings.json`、`settings.local.json`、`.mcp.json` 做启发式的明文密钥检查（键名、常见密钥形状、URL 里的口令、命令行参数里的密钥）；这些文件不是严格 JSON（带注释、尾逗号）时按“无法确认”拒绝。藏在 URL 路径里的令牌、写成 JSON 数字的值、`-p` 这类短参数后面的值、命令里加了引号的赋值（如 `export API_TOKEN="…"`、PowerShell 的 `$env:API_TOKEN="…"`；值是 `sk-ant-`、`ghp_` 这类常见密钥形状的除外）查不出来。下面这些不算明文密钥：权限规则里的命令名（如 `Bash(gh auth token:*)`）、`--key` 后面的文件路径、对环境变量的引用（`${变量}`、`$变量`，PowerShell 的 `$env:变量`，cmd 的 `%变量%`）、grep 或 rg 的匹配模式（`'token=|password='`、`'token=\w+'`）、`echo 'Password: not stored here'` 这类冒号后面是几个词的提示文字（`Authorization`、`Cookie`、`X-Api-Key` 等认证请求头和 `-H` 后面的请求头除外）、`--token-limit=200000`、`TOKEN_LIMIT`、`COOKIE_DOMAIN` 这类以 limit、max、count、size、length、domain 等结尾的名字。hook 或 statusLine 命令里出现“名字=一个词”“名字: 一个词”时仍可能误报：看报错列出的键路径，确认不是密钥后加 `--allow-inline-secrets`。会话记录（`history.jsonl`、`projects/`）不检查。加 `--allow-inline-secrets` 会照样备份，并列出放过了哪些文件和键名。
+- 备份前对 `settings.json`、`settings.local.json`、`.mcp.json` 做启发式的明文密钥检查（键名、常见密钥形状、URL 里的口令、命令行参数里的密钥）；这些文件不是严格 JSON（带注释、尾逗号）时按“无法确认”拒绝。藏在 URL 路径里的令牌、写成 JSON 数字的值、`-p` 这类短参数后面的值、hook 或 statusLine 命令里用空格隔开的 `--api-key 值`、`--token 值`（值是常见密钥形状的照样能查出；`.mcp.json` 参数列表里分成两项的 `--api-key`、`值`，以及命令里的 `--token=值` 也能查出）、命令里加了引号的赋值（如 `export API_TOKEN="…"`、PowerShell 的 `$env:API_TOKEN="…"`；值是 `sk-ant-`、`ghp_` 这类常见密钥形状的除外）查不出来。下面这些不算明文密钥：权限规则里的命令名（如 `Bash(gh auth token:*)`）、`--key` 后面的文件路径、对环境变量的引用（`${变量}`、`$变量`，PowerShell 的 `$env:变量`，cmd 的 `%变量%`）、grep 或 rg 的匹配模式（`'token=|password='`、`'token=\w+'`；只看第一个字符：命令里以 `|`、`\`、`(`、`[` 开头的值一律当成匹配模式放过，真密钥以这几个字符开头时也会漏掉）、`echo 'Password: not stored here'` 这类冒号后面是几个词的提示文字（`Authorization`、`Cookie`、`X-Api-Key` 等认证请求头和 `-H` 后面的请求头除外）、`--token-limit=200000`、`TOKEN_LIMIT`、`COOKIE_DOMAIN` 这类以 limit、max、count、size、length、domain 等结尾的名字。hook 或 statusLine 命令里出现“名字=一个词”“名字: 一个词”时仍可能误报：看报错列出的键路径，确认不是密钥后加 `--allow-inline-secrets`。会话记录（`history.jsonl`、`projects/`）不检查。加 `--allow-inline-secrets` 会照样备份，并列出放过了哪些文件和键名。
 - 按文件名排除的东西不进备份：`.env*`、`*.key`、`*.pem` 这类密钥文件、`auth.json`、`token.json`、`credentials.json` 等凭据文件和 `.git`。排除了几个，备份完成时会打印一行，并记进快照的 `manifest.json`。
 - “只允许本机盘”实际查了什么：Linux 按 `/proc/mounts` 拒绝 NFS、SMB、9p、sshfs 等网络或共享文件系统；macOS 只拦 iCloud（`~/Library/Mobile Documents`）和 `~/Library/CloudStorage` 下的目录，不查 `/Volumes` 下的网络卷；Windows 只看盘符类型（拒绝网络驱动器），不查 OneDrive 等同步目录。`claude_local_data.py audit` 只读元数据，在网络盘或同步目录上照常盘点，结果里注明 `network_or_synced_storage`；`backup` 仍然拒绝。
 
@@ -223,7 +223,7 @@ py -3 .\claude_local_data.py recover "<快照目录>" --destination "<已存在�
 
 ## 离线自检命令
 
-在仓库根目录执行以下命令即可离线复核全部测试（包含 UI 算法与文档链接回归检查）。只能在 Windows 上跑的用例，在 Linux 和 macOS 上会显示为跳过；发布包里没有 `tools/`、`docs/releases/` 和 `.gitattributes`，自动同步相关的用例和几项只在完整仓库里才有意义的检查在包里也会跳过，这都不算失败：
+在仓库根目录执行以下命令即可离线复核全部测试（包含 UI 算法与文档链接回归检查；网页算法与 Python 对账的 3 项要用 Node.js，没装时显示为跳过）。只能在 Windows 上跑的用例，在 Linux 和 macOS 上会显示为跳过；只在 Linux 上跑的挂载表用例和只在 POSIX 上跑的文件权限用例，在 Windows 上会显示为跳过（挂载表那项在 macOS 上也跳过）；Windows 上不能建符号链接时（没开开发者模式，也不是管理员），用到符号链接的几项也会跳过；发布包里没有 `tools/`、`docs/releases/` 和 `.gitattributes`，自动同步相关的用例和几项只在完整仓库里才有意义的检查在包里也会跳过，这都不算失败：
 
 ```bash
 python -B -m unittest discover -p "test_*.py" -v

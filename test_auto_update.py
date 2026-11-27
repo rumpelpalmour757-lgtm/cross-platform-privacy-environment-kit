@@ -884,7 +884,9 @@ class RealTreeGateTest(unittest.TestCase):
         listing = subprocess.run(["git", "ls-files", "-co", "--exclude-standard", "-z"], cwd=REPO,
                                  capture_output=True, text=True, encoding="utf-8")
         if listing.returncode:
-            self.skipTest("this copy of the kit is not a git checkout")
+            # Not only "not a git checkout": git also refuses a folder another account owns.
+            message = (listing.stderr.strip().splitlines() or ["no message"])[0]
+            self.skipTest(f"git does not list this folder: {message}")
         names = [name for name in listing.stdout.split("\0") if name and (REPO / name).is_file()]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

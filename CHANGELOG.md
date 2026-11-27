@@ -1,6 +1,6 @@
 # 版本记录
 
-## v0.4.2（2026-11-26）— 自动同步默认不推送、体检与备份检查收紧、文档与脚本行为对齐
+## v0.4.2（2026-11-27）— 自动同步默认不推送、体检与备份检查收紧、文档与脚本行为对齐
 
 > **升级前先看：自动同步的行为变了。** 默认不再推送，要推必须加 `--push`；工作区不干净时拒绝运行；源目录里的新文件要用 `--allow-new` 点名；仓库里人工改过的文件不会再被源目录悄悄覆盖。靠定时任务自动推送的，要自己改任务的命令行，详见 [AUTO-UPDATE.md](AUTO-UPDATE.md)。这一版没有改任何 `.ps1` 脚本。
 
@@ -42,10 +42,10 @@
 
 ### 备份（`claude_local_data.py`、`config_snapshot.py`）
 
-- `claude_local_data.py` 的明文密钥检查覆盖面加宽：`.mcp.json` 参数列表里的每个字符串都查，认得 `--api-key 值`、`--token=值` 和请求头写法；`env`、`headers` 下按整词认 `TOKEN`、`KEY`、`SECRET`、`PASSWORD`、`PWD`、`PAT`、`COOKIE` 等，以及以 `Auth` 结尾的名字（如 `X-Auth`）；任何位置以 `token` 结尾的键名（`auth.token`、`apiToken`）；URL 里的 `用户:口令@`、`?token=` 和 `#access_token=`；常见密钥形状不再要求出现在开头；新增 PEM 私钥头；重复键两个值都查。`apiKeyHelper` 这类值是脚本路径的设置、权限规则里的命令名（如 `Bash(gh auth token:*)`）、`--key` 后面的文件路径、对环境变量的引用（`${变量}`、`$变量`、PowerShell 的 `$env:变量` 和 `${env:变量}`、cmd 的 `%变量%`）不再误报。藏在 URL 路径里的令牌、写成 JSON 数字的值、`-p` 这类短参数后面的值、命令里加了引号的赋值（`export API_TOKEN="…"`、`$env:API_TOKEN="…"`，常见密钥形状除外）仍然查不出来。
+- `claude_local_data.py` 的明文密钥检查覆盖面加宽：`.mcp.json` 参数列表里的每个字符串都查，认得 `--api-key 值`、`--token=值` 和请求头写法；`env`、`headers` 下按整词认 `TOKEN`、`KEY`、`SECRET`、`PASSWORD`、`PWD`、`PAT`、`COOKIE` 等，以及以 `Auth` 结尾的名字（如 `X-Auth`）；任何位置以 `token` 结尾的键名（`auth.token`、`apiToken`）；URL 里的 `用户:口令@`、`?token=` 和 `#access_token=`；常见密钥形状不再要求出现在开头；新增 PEM 私钥头；重复键两个值都查。`apiKeyHelper` 这类值是脚本路径的设置、权限规则里的命令名（如 `Bash(gh auth token:*)`）、`--key` 后面的文件路径、对环境变量的引用（`${变量}`、`$变量`、PowerShell 的 `$env:变量` 和 `${env:变量}`、cmd 的 `%变量%`）不再误报。藏在 URL 路径里的令牌、写成 JSON 数字的值、`-p` 这类短参数后面的值、hook 或 statusLine 命令里用空格隔开的 `--api-key 值`、命令里加了引号的赋值（`export API_TOKEN="…"`、`$env:API_TOKEN="…"`，常见密钥形状除外）仍然查不出来。
 - 新的“名字=值”“名字: 值”扫描不把这些当成密钥：grep 或 rg 的匹配模式（值以 `|`、`\`、`(`、`[` 开头，如 `'token=|password='`、`'token=\w+'`）；冒号后面是几个词的提示文字（如 `echo 'Password: not stored here'`），但 `Authorization`、`Cookie`、`X-Api-Key` 等认证请求头和 `-H`/`--header` 后面的请求头照查；以 `limit`、`max`、`min`、`count`、`size`、`length`、`domain` 结尾的名字（`--token-limit=200000`、`TOKEN_LIMIT`、`COOKIE_DOMAIN`）。hook 或 statusLine 命令里的“名字=一个词”“名字: 一个词”仍可能误报，报错会列出键路径，确认后可加 `--allow-inline-secrets`。
 - 不是严格 JSON 的 `settings.json`、`settings.local.json`、`.mcp.json`（带注释、尾逗号、非 UTF-8、嵌套过深）按“无法确认”拒绝，以前是静默放行；空文件照常通过，`audit_client_boundary.py` 和统一体检也把空文件当成“读到了、什么都没配”，不再记成读不了。
-- 快照先在一个和最终路径一样长的暂存目录里建好、校验，再改名发布：Windows 没开长路径时，以前可能在暂存目录里校验通过，改成更长的最终名字以后却打不开。路径超过 Windows 长度上限时，报错多一句说明（只说长度，不打印路径）。
+- `claude_local_data.py` 的快照先在一个和最终路径一样长的暂存目录里建好、校验，再改名发布：Windows 没开长路径时，以前可能在暂存目录里校验通过，改成更长的最终名字以后却打不开。路径超过 Windows 长度上限时，报错多一句说明（只说长度，不打印路径）。`config_snapshot.py` 的暂存方式没有改，发布名仍比暂存名长 1 个字符。
 - 三个脚本（`config_snapshot.py`、`claude_local_data.py`、`refresh_allowlists.py`）打印路径时，遇到输出编码里没有的字（输出重定向或经管道时，繁体中文 Windows 用 cp950，没有简体字）改成 `\uXXXX` 输出，不再在备份、快照或预览已经做完以后报“stopped”。
 - `--allow-inline-secrets` 照样检查、照样备份，并在 stderr 列出放过了哪些文件和键名；报错最多列 10 处“文件标签: 键路径”，不打印值。
 - 备份成功后打印按文件名排除了几个条目（`.env*`、密钥和凭据文件、`.git`），`manifest.json` 新增 `excluded_secret_entries`；格式号仍是 2，新旧版本的快照互相读得回。
