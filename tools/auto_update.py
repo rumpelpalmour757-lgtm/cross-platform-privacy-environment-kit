@@ -804,6 +804,10 @@ def build_parser():
 def main(argv=None):
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    # Argument errors and warnings go to stderr. Without this they follow the system code page
+    # and a ">> log 2>&1" log mixes two encodings.
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
     args = build_parser().parse_args(argv)
     touched = Touched()
     committed = None  # stays None until the commit step has finished

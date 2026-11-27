@@ -1,10 +1,32 @@
 # 版本记录
 
-## 未发布：Windows 脚本修复（还没有在 Windows 真机上跑过）
+## 未发布
 
-> 这一节的 `.ps1` 改动没有在 Windows 上运行过。CI 在 windows-latest 上对它们只做语法解析、`Preview` 对账和几个纯函数的单测（是否通过以 PR 上的 CI 结果为准），`Install`、`Remove`、`Status` 和断线演练要在真机上跑。要等在真机上照 `WINDOWS-KILL-SWITCH.md` 跑过 `Preview`、`Install`、`Status`、断线演练、`Remove` 以后再发版。
+v0.4.2 以后的改动，还没有发版。
 
-### 断网开关和 LAN DNS Guard（`Manage-WindowsKillSwitch.ps1`、`Manage-WindowsLanDnsGuard.ps1`）
+> 下面“Windows 脚本”几节的 `.ps1` 改动没有在 Windows 上运行过。CI 在 windows-latest 上对它们只做语法解析、`Preview` 对账和几个纯函数的单测（是否通过以 PR 上的 CI 结果为准），`Install`、`Remove`、`Status` 和断线演练要在真机上跑。要等在真机上照 `WINDOWS-KILL-SWITCH.md` 跑过 `Preview`、`Install`、`Status`、断线演练、`Remove` 以后再发版。
+
+### CI 和发布流程（`.github/workflows/`、`tools/ci/`）
+
+- `tests.yml`：ubuntu 的两个任务（Python 3.10、3.13）跑完全套以后，在“Windows 模拟”下再跑一遍全套：临时目录是指向真实目录的符号链接（像 Windows runner 临时目录的 8.3 短名，拿到的路径和解析以后的不一样），路径里有空格和中文（其中几个字 cp950 里没有）；交给子进程的文本输入和只写模式（`w`、`a`、`x`）打开的文本文件用 CRLF 换行（读写模式 `r+`、`w+`、`a+` 不改：改了读回来的换行就和 Windows 不一样了，所以这几种模式的写入没有模拟，自检里查 `w+` 读回来是 `\n`）；`~名字` 按 ntpath 的规则展开成家目录旁边的同名目录；输出编码 cp950。模拟用的 `tools/ci/sitecustomize.py` 只在这一步经 `PYTHONPATH` 加载，在 Windows 上什么都不做，不进发布包；先跑一遍自检，确认几样模拟确实生效。它只是近似：不改 `os.sep`、`sys.platform`、盘符、文件名大小写和路径长度规则，只能在 Windows 上跑的用例照旧跳过，真正的 Windows 结果仍看 windows-latest。拿 PR #1 当时在 Windows CI 上红过的两个提交（`439f2c0`、`087e96d`）试过：在本机原样跑全绿；在模拟下，Windows CI 上红过的那 4 项都红了，另外还红了两项后来已经修掉的问题（`config_snapshot.py` 打印路径遇到 cp950 里没有的字就报错，`087e96d` 修了；Linux 挂载表用例遇到带空格的临时路径不对，`80dc14d` 修了）。
+- `tests.yml`：Windows 任务在跑测试之前打印 Python、git、Node.js、PowerShell 7 和 Windows PowerShell 的版本，系统 ANSI/OEM 代码页和控制台代码页，Python 看到的编码，临时目录和它解析以后的路径。
+- `tests.yml` 新增 `archive` 任务：用和 `release.yml` 相同的 `git archive` 命令打包，解到带空格和中文的目录，在 ubuntu-latest 和 windows-latest 上各用 Python 3.13 跑一遍全套；先确认包里没有 `tools/`、`.github/`、`.gitattributes`、`docs/releases/`，日志里打印包内文件数和内容摘要，两种系统可以对照是不是同一份内容。包里没有 `tools/`，自动同步的用例在这个任务里显示为跳过。
+- `tests.yml` 可以手动运行（`workflow_dispatch`），给发布前补跑用。
+- `release.yml` 打包前查要打包的那个提交上“测试”工作流的结果：只认 push 和手动运行（pull request 测的是合并结果，不是这个提交本身）；这个提交上还有没跑完的就拒绝；取最近开始的一次，结论必须是 success，`tests` 的三个任务和 `archive` 的两个任务都要在、都要是 success（这次运行里另有别的任务的，也要是 success）。没有记录、还在跑、少了任务、有任务没过都拒绝发布，什么都不建；加 `archive` 任务以前的提交（v0.4.2 和更早）上没有发布包两项，用这个工作流发不了；重跑办法写在 `release.yml` 开头（Re-run all jobs；没有记录时在“测试”里 Run workflow，选指向这个提交的分支或标签）。工作流的权限加了 `actions: read`，用来读运行记录。
+- `test_public_release.py` 新增检查：`release.yml` 闸门里列的五个任务名（`tests` 三个、`archive` 两个）和 `tests.yml` 的矩阵对得上，查测试结果在打包之前，`tests.yml` 可以手动运行。
+- `test_public_release.py` 新增发布闸门的行为测试：从 `release.yml` 里取出“查测试结果”那一步的脚本原样运行，`gh` 换成假的（按构造的运行记录回答，`--jq` 的过滤式交给 jq），试全绿、重跑转绿、没有记录、别的提交上的运行、只有 pull request 的运行、最近一次没过、还在跑或排队、结论不是 success、少了任务（包括整次运行里没有发布包两项）、有任务没过或被跳过、接口出错，核对退出码和拒绝的原因。闸门里的每一项检查（只认 push 和手动运行、按提交查、取最近开始的一次、没跑完就拒绝、结论必须是 success、逐个任务查）改松了，都有用例变红。只在 Linux 上跑（发布工作流跑在 ubuntu-latest），没有 bash 或 jq 时跳过，在 GitHub Actions 上缺了就报错、不跳过；发布包里没有 `.github/`，在包里显示为跳过。
+
+### 自动同步（`tools/auto_update.py`、`AUTO-UPDATE.md`）
+
+- 标准错误也设成 UTF-8（写不出的字符转义成 `\uXXXX` 这类写法）：参数解析出错的提示和脚本自己的记录编码一致，`>> 日志 2>&1` 写出来的日志不再混着两种编码。Python 打不开脚本（`can't open file`）的那一行在脚本运行之前写出，仍按系统代码页。`AUTO-UPDATE.md` 里日志编码的说明照改。
+- 新增测试：输出编码是 cp950 时，参数解析出错的提示按 UTF-8 写出，简体字不再变成 `\uXXXX`；在本进程里调用 `main()` 的那项测试同时接管标准错误，不再改动测试运行器自己的输出流。
+
+### 备份（`claude_local_data.py`）
+
+- 明文密钥检查：写成一项、不带空格的 `--header=名字: 值`、`-H=名字: 值`（`.mcp.json` 的参数列表里，以及 hook 或 statusLine 命令里）也按请求头查；以前只认 `--header`、`名字: 值` 分成两项，或中间是空格、引号的写法。判定和分开写的形式一致：`--header=Accept: application/json`、引用环境变量的值照旧不算，冒号后面是几个词的值跟在请求头选项后面照样算。
+- 新增测试：上面几种写法各一例（报错列出键路径、不打印值），以及几种不该报的写法。
+
+### Windows 脚本：断网开关和 LAN DNS Guard（`Manage-WindowsKillSwitch.ps1`、`Manage-WindowsLanDnsGuard.ps1`）
 
 - **目录权限检查改对了掩码**：v0.4.2 的掩码把 `Write`、`Modify`、`FullControl` 等或在一起，结果等于 `FullControl`，共享用户组有只读权限也被拒，工具包放在 `C:\Program Files` 下时 `Install`、`Remove` 都跑不了。现在只看改动类权限（写入、追加、写属性、删除、删除子项、改权限、取得所有权，以及通用的 `GENERIC_WRITE`、`GENERIC_ALL`），只读和执行放行，只作用于子项的继承项不算；共享用户组加上 INTERACTIVE；按 SID 读权限，不再逐条翻译账户名。报错写出是哪个路径、哪个用户组、什么权限。两个脚本里这段函数逐字相同，测试会比对。
 - **`Remove` 不再被位置检查拦住**：目录权限、重解析点、非 NTFS 卷这几项，`Remove` 只打印 `WARNING:` 后继续删规则；日志目录不可用时 `Remove` 不写日志继续。`Install` 照旧拒绝，FAT32、exFAT 这类没有权限的卷上现在也拒绝（以前直接放行）。重解析点的报错写出是哪一级目录。
@@ -18,29 +40,40 @@
 - 断网开关 `Install`、`Status` 发现处于连接状态的非隧道虚拟网卡时，在标准错误里打印警告。
 - 断网开关的 `Preview` 和 `Status`（规则对得上或不带参数时）以 `exit 0` 结束（以前是 `return`，在同一个窗口里 `& .\Manage-WindowsKillSwitch.ps1 …; $LASTEXITCODE` 显示的是上一条命令留下的值），和 LAN DNS Guard 一致。
 
-### `Test-ProxyState.ps1`
+### Windows 脚本：`Test-ProxyState.ps1`
 
 - **默认 `-AddressFamily auto` 不再把两个地址族混在一起预检**：`normal`、`upstream-unreachable` 阶段只测隧道网卡上有默认路由的地址族，TUN 只接管 IPv4 时只发 IPv4 请求，物理网卡上的原生 IPv6 路由碰不到这次探测。显式给 `ipv4`、`ipv6` 时要求隧道有这一族的默认路由。输出加 `TunnelRouteFamilies`、`RequestedAddressFamily`、`ProbedAddressFamily`、`TunnelDetection`，每个探测的 `AddressFamily` 是实际测的那一族；`Coverage` 写明不比较跃点数。
 - 新增 `-TunnelInterfaceAlias`：客户端的隧道网卡名字认不出时，用它指明哪张是隧道网卡，不必用 `-AllowDirectWithoutTun`。只认虚拟网卡：`HardwareInterface` 为 `True` 的物理网卡（Wi-Fi、以太网）不算隧道，否则填错一张物理网卡，预检就会放行、用真实 IP 直连探测站点。`normal`、`upstream-unreachable` 阶段填了物理网卡、不存在的名字或没连上的网卡时报错，写出是哪个名字，不发包；确实要直连时同时给 `-AllowDirectWithoutTun`（这时只打印警告）。
 - `tun-down`、`client-down` 阶段：系统 DNS 缓存里探测域名只有 fake-ip 地址（`198.18.0.0/15`、`fc00::/18`，和 `refresh_allowlists.py` 同一套网段）时，连不上记为 `inconclusive`，不再记为 `observed`：关掉 TUN 以后这种地址装不装断网开关都连不上，说明不了断网开关拦住了什么。每个探测多一个字段 `DnsCacheFakeIpOnly`；读不到缓存里的地址时它是 `false`，按以前的办法判。
 
-### 只读体检（`Inspect-WindowsProxy.ps1`、`Inspect-WindowsFirewall.ps1`）
+### Windows 脚本：只读体检（`Inspect-WindowsProxy.ps1`、`Inspect-WindowsFirewall.ps1`）
 
 - `Inspect-WindowsProxy.ps1` 遮盖路径：用户目录（含 AppData）下只保留最后一段，上一级目录只在整段就是已知客户端名（进程名，或者产品名后面可以跟一个版本号，例如 `v2rayN 7.2.1`）时保留，其余目录名一律遮盖（以前会原样输出可执行文件的上一级目录名，路径只有两段时整段保留）。“客户端名 + 空格 + 别的字”的目录名（例如带人名、公司名）也遮盖。
 - `Inspect-WindowsFirewall.ps1` 的“系统或微软自带”只看规则组（Windows 资源串、`@{Microsoft.*}` 包、以 Microsoft、Windows、Core Networking 开头的组），不再在名字里找 Windows、Office、Edge 这类词（以前 “Clash for Windows”“WPS Office” 也被算成微软自带）。打包应用的规则组按包名里的发布者 ID 认：带 Microsoft（`8wekyb3d8bbwe`）或 Windows（`cw5n1h2txyewy`）发布者 ID 的算微软自带，包名不以 `Microsoft.` 开头的系统应用（例如 `MicrosoftWindows.Client.CBS`、`windows.immersivecontrolpanel`、`MSTeams`）也认得出。判断抽成了函数 `Test-MicrosoftRuleGroup`。`EvidenceLimits` 写明 `MsixClaudeOutboundAllowCount`、`LanDnsPort53OutboundBlockCount` 实际数的是什么。字段名没有改。
 
-### 文档、离线网页和测试
+### Windows 脚本的文档、离线网页和测试
 
 - 断网开关文档的示例参数里，端口、协议改成和上游地址一样的尖括号占位符（以前写死 `443`、`'TCP'`，照抄时节点不是 443/TCP 就会装完断网），并写明装之前在客户端里要确认的几件事（节点写 IPv4、固定用一个节点、全局代理）；`fake-ip` 时断线演练测不出断网开关，写进「断线演练」。OneDrive 接管的文件夹带重解析点属性这一点注明没有实测，「已知问题」里不再说“一律拒绝”；README 里“不要放在 U 盘上”改成按文件系统说（NTFS 的 U 盘检查拦不住，查的是 FAT32、exFAT）。
 - `WINDOWS-KILL-SWITCH.md`、README、离线网页照新的行为改写：放置位置、`Remove` 的两种输出和还剩规则时怎样处理、LAN DNS Guard 换网卡要先 `Remove`、两个 `Status` 的退出码、`Test-ProxyState.ps1` 的地址族和 `-TunnelInterfaceAlias`、查看物理网卡的命令；「已知问题」只留还没修的。
 - `test_kill_switch_powershell.py`：新增所有平台都跑的源码检查（没有 BOM 的 `.ps1` 必须是纯 ASCII；两个管理脚本的共用函数逐字相同；权限掩码的算术；规则名和描述与 Python 规划器、文档里的手工撤销命令一致；三处隧道网卡正则相同），以及只在 Windows 上跑的用例：用合成的权限项测 `Get-SharedWriteGrant`，带中文、空格、不可见字符和重复的网卡名对照 Python 规划器，`Test-ProxyState.ps1` 的地址族选择，真的执行离线网页生成的 `Preview` 命令（只取 `Preview` 以前的部分）。
 - 所有平台都跑的源码检查又加了几项，钉住没有用例能跑到的安全相关流程，改回 v0.4.2 的写法就会变红：两个管理脚本的 `Remove` 只把位置检查当警告、日志写不进去也继续，非 NTFS/ReFS 卷是 `Install` 的问题而不是放行；断网开关 `Remove` 同组还剩规则时报 `removed-other-rules-remain`、退出码 2；LAN DNS Guard `Install` 不删任何不是这次加的规则，先记名再建、建成禁用、读回核对、再启用；两个脚本 `Preview`、`Status` 的退出码；`Test-ProxyState.ps1` 把收窄后的地址族传给 curl、点名的物理网卡不算隧道、fake-ip 网段和 `refresh_allowlists.py` 一致；`Inspect-WindowsProxy.ps1` 的目录名规则（用 Python 照同一个正则试中文目录名）和 `Inspect-WindowsFirewall.ps1` 的规则组分类（同上）。只在 Windows 上跑的用例另加四个：隧道网卡挑选、fake-ip 判断、规则组分类、路径遮盖，都是把函数从脚本里取出来用合成输入跑。
 
-### 没有改的
+### Windows 脚本这几节没有改的
 
 - 路由规则、域名、网段的内容；Android 校验器；规划器的规则表。
 - 两个管理脚本仍然各带一份共用函数（没有抽成点源引用的公共文件：那样管理员权限下会多执行一个文件，也要多检查一个文件的权限），改由测试保证两份相同。
 - `-DhcpServer` 只收 RFC 1918、上游和 DHCP 同址装不了、虚拟网卡选不进保护范围、窗口输出不脱敏，这几条照旧，见 `WINDOWS-KILL-SWITCH.md` 的「已知问题」。
+
+### 升级要注意
+
+- `claude_local_data.py`、`test_claude_local_data.py`，以及“Windows 脚本”几节改过的 `Inspect-WindowsFirewall.ps1`、`Inspect-WindowsProxy.ps1`、`Manage-WindowsKillSwitch.ps1`、`Manage-WindowsLanDnsGuard.ps1`、`Test-ProxyState.ps1`、`WINDOWS-KILL-SWITCH.md`、`test_kill_switch_powershell.py`，都在本机源目录维护，这次直接在仓库里改了。用自动同步的，先把这些文件拷回源目录，否则下一次同步会把它们列为人工改动并停下（见 [AUTO-UPDATE.md](AUTO-UPDATE.md) 的“仓库里人工改过的文件”）。其余改动的文件只在仓库里维护。
+
+### 没有验证的
+
+- 新加的 CI 步骤和任务（Windows 环境打印、Windows 模拟、`archive` 两项）和发布闸门，要推到 GitHub 上跑过才知道能不能跑通。本地只用 PyYAML 解析了两个工作流（这里没有 actionlint）；发布闸门那段脚本只用假的 `gh` 和构造的运行记录测过（上面那项测试），没有调用过真的 GitHub API，也没有真的发过版：真的 gh 用它内置的 jq 实现执行 `--jq`，测试里用的是系统的 jq；接口返回的任务名是不是正好等于 `tests.yml` 里 `name:` 展开后的样子，也要真的跑过才知道。
+- 这里没有 Windows 和 PowerShell：Windows 那边新加的步骤，以及 `archive` 在 windows-latest 上把包解到中文目录里跑的那几项 PowerShell 测试，都没有跑过。
+- 本地在 Linux 上用 Python 3.10、3.13 跑过全套，原样和 Windows 模拟下各一遍；也照 `archive` 的做法把包解到带空格和中文的目录里跑过。
+- 上面“Windows 脚本”几节的 `.ps1` 改动都没有在 Windows 上运行过，见本节开头。
 
 ## v0.4.2（2026-11-27）— 自动同步默认不推送、体检与备份检查收紧、文档与脚本行为对齐
 
