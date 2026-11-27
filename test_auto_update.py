@@ -433,7 +433,9 @@ class InProcessTests(SandboxTestCase):
         # os.path.islink() is False for a junction (mklink /J); os.lstat() reports its reparse tag.
         box = self.box
         write(box.source / "mobile" / "rules.json", '{"rules": [1]}\n')
-        junction = box.repo / "mobile"
+        # The script's REPO is resolved; on Windows runners the temporary folder is an 8.3 short
+        # name (RUNNER~1), so compare with the path the script itself builds.
+        junction = self.mod.REPO / "mobile"
         real_lstat = os.lstat
 
         def lstat(path, *args, **kwargs):
