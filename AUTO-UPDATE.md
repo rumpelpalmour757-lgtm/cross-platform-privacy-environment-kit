@@ -145,4 +145,4 @@ GitHub 仓库设置里的 secret scanning 和 push protection 建议打开，作
 
 ## 第一次关联 GitHub
 
-`tools/Link-GitHub.cmd` 是作者本人第一次关联 GitHub 时用的：已经配了 origin 就推送 `main`；没有 origin，或者推送失败，就接着用 `gh repo create --public --push` 新建公开仓库。它不过闸门、不跑测试，也不会创建任何定时任务；末尾“之后每周一 09:00 自动更新”的提示，要另外建好定时任务（见上文）才成立，而且现在的自动更新默认不推送。复用这个仓库的人，建议手动执行 `git remote add origin <仓库地址>` 和 `git push -u origin main`。
+`tools/Link-GitHub.cmd` 是作者本人第一次关联 GitHub 时用的。已配置 `origin` 时，它向该远端推送 `main`。只有 Git 明确报告缺少 `origin` 时，它才会用 `gh repo create --public --push` 新建公开仓库。读取配置或上传失败时，脚本以退出码 1 停止。这个首次上传脚本不运行隐私检查和测试。每周自动更新需要按上文单独配置定时任务，默认只提交到本地。复用这个仓库的人，建议手动执行 `git remote add origin <仓库地址>` 和 `git push -u origin main`。

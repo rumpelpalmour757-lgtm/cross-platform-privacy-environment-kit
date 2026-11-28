@@ -45,6 +45,52 @@ KIT_FILES = {
 }
 
 
+@unittest.skipUnless(os.name == "nt", "Requires Windows cmd.exe")
+class LinkGitHubTests(unittest.TestCase):
+    def test_publish_command_follows_origin_lookup_and_preserves_failures(self):
+        launcher = REPO / "tools" / "Link-GitHub.cmd"
+        if not launcher.is_file():
+            self.skipTest("tools is excluded from release archives")
+        cases = [
+            (0, 0, 0, ["git push -u origin main"], 0),
+            (0, 1, 0, ["git push -u origin main"], 1),
+            (2, 0, 0, ["gh repo create cross-platform-privacy-environment-kit --public --source . --remote origin --push"], 0),
+            (2, 0, 1, ["gh repo create cross-platform-privacy-environment-kit --public --source . --remote origin --push"], 1),
+            (128, 0, 0, [], 1),
+        ]
+        with tempfile.TemporaryDirectory() as folder:
+            sandbox = Path(folder)
+            tools = sandbox / "tools"
+            tools.mkdir()
+            shutil.copy2(launcher, tools)
+            for name in ("git.exe", "gh.exe"):
+                shutil.copy2(sys._base_executable, sandbox / name)
+            for command, status in {"remote": "LOOKUP_RESULT", "push": "PUSH_RESULT",
+                                    "repo": "CREATE_RESULT", "auth": "AUTH_RESULT"}.items():
+                (sandbox / command).write_text(
+                    "import os, sys\nfrom pathlib import Path\n"
+                    "with open('calls.txt', 'a') as log:\n"
+                    "    print(Path(sys.executable).stem, *sys.argv, file=log)\n"
+                    f"sys.exit(int(os.environ['{status}']))\n", encoding="ascii",
+                )
+            system32 = Path(os.environ["SystemRoot"]) / "System32"
+            for lookup, push, create, expected_commands, expected_status in cases:
+                with self.subTest(lookup=lookup, push=push, create=create):
+                    calls = sandbox / "calls.txt"
+                    calls.unlink(missing_ok=True)
+                    env = dict(os.environ, PATH=os.pathsep.join([str(sandbox), sys.base_prefix, str(system32)]),
+                               PYTHONHOME=sys.base_prefix, PYTHONPATH="", LOOKUP_RESULT=str(lookup),
+                               PUSH_RESULT=str(push), CREATE_RESULT=str(create), AUTH_RESULT="0", ERRORLEVEL="2")
+                    result = subprocess.run(
+                        [str(system32 / "cmd.exe"), "/d", "/c", r"tools\Link-GitHub.cmd"],
+                        cwd=sandbox, env=env, input=b"\r\n", capture_output=True, timeout=10,
+                    )
+                    published = [line for line in calls.read_text("ascii").splitlines()
+                                 if line.startswith(("git push", "gh repo create"))]
+                    self.assertEqual(published, expected_commands)
+                    self.assertEqual(result.returncode, expected_status, result.stdout)
+
+
 def link(scheme, rest):
     """Build "<scheme>://<rest>" without writing a scheme and "://" side by side in this file."""
     return scheme + ":" + "//" + rest
