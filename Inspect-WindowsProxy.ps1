@@ -5,9 +5,11 @@ Creates a read-only, redacted snapshot of proxy-related settings on Windows.
 
 .DESCRIPTION
 Uses local Windows APIs only. Does not inspect process arguments or subscription
-files, and does not query an external service. Custom directory segments under
-UserProfile, custom network interface aliases, and custom startup entry names are
-masked to prevent leaking personal or corporate identifiers.
+files, and does not query an external service. Directory names under UserProfile
+(AppData included) are masked except a folder named after a known client, and
+custom network interface aliases and custom startup entry names are masked, to
+prevent leaking personal or corporate identifiers. Paths under Program Files that
+are more than three levels deep keep only their first folder and the file name.
 #>
 
 [CmdletBinding()]
@@ -61,6 +63,10 @@ foreach ($entry in @{
 }
 $startupNamePattern = '(?i)v2rayn|clash.verge|mihomo.party|clash.party|sing.box|flclash|nekoray|hiddify|surge|tailscale'
 $installedNamePattern = '^(?i:v2rayN|Clash Verge(?: Rev)?|Clash for Windows|Mihomo Party|Clash Party|FlClash|NekoRay|Surge|Hiddify|Tailscale)(?:\s|$)'
+# A folder name that is a known client name as a whole, optionally followed by a version number
+# ("v2rayN", "Clash Verge Rev", "v2rayN 7.2.1"). Unlike $installedNamePattern it does not accept
+# other text after the name, so "v2rayN <person or company>" is masked like any other folder.
+$clientFolderPattern = '^(?i:v2rayN|Clash Verge(?: Rev)?|Clash for Windows|Mihomo Party|Clash Party|FlClash|NekoRay|Surge|Hiddify|Tailscale)(?: v?[0-9]+(?:\.[0-9]+)*)?$'
 $tunnelPattern = '(?i)(?:^|[\s_.-])(?:u?tun\d*|wintun\d*|wireguard|tailscale|sing[-_]?box|mihomo|clash)(?:$|[\s_.-])'
 $genericInterfacePattern = '^(?i:Ethernet(?:\s+\d+)?|Wi-Fi(?:\s+\d+)?|WLAN(?:\s+\d+)?|Local Area Connection(?:\s*\*?\s*\d+)?|Loopback Pseudo-Interface\s+\d+|vEthernet\s*\(Default Switch\)|以太网(?:\s+\d+)?|无线网络连接(?:\s+\d+)?|本地连接(?:\s*\*?\s*\d+)?)$'
 
@@ -107,9 +113,17 @@ function Protect-LocalPath {
         if ($Path.StartsWith($prefix + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
             $rel = $Path.Substring($prefix.Length + 1)
             $parts = @($rel -split '\\' | Where-Object { $_ })
-            if ($label -eq '<UserProfile>' -and $parts.Count -gt 2) {
-                # Redact intermediate personal/project directories under UserProfile.
-                return "$label\...\$($parts[-2])\$($parts[-1])"
+            if ($label -in @('<UserProfile>', '<LocalApplicationData>', '<ApplicationData>')) {
+                # Folders inside the profile often carry personal, project or employer names. Keep the
+                # last segment, and the folder holding it only when that whole folder name is a known
+                # client name (a process name such as "clash-verge", or a product name with an
+                # optional version number).
+                if ($parts.Count -le 1) { return "$label\$rel" }
+                $parent = [string]$parts[-2]
+                if ($clientNames.ContainsKey($parent) -or $parent -match $clientFolderPattern) {
+                    return "$label\...\$parent\$($parts[-1])"
+                }
+                return "$label\...\$($parts[-1])"
             }
             if ($parts.Count -gt 3) {
                 return "$label\$($parts[0])\...\$($parts[-1])"

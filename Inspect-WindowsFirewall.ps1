@@ -45,6 +45,22 @@ function Invoke-LocalFirewallProbe {
     }
 }
 
+function Test-MicrosoftRuleGroup {
+    # Does a rule group look built in or Microsoft? Judged by the group only: built-in rules use
+    # resource strings such as @FirewallAPI.dll,-25000 or @%SystemRoot%\...; packaged apps use
+    # @{<package name>?ms-resource://...}, where the package name starts with Microsoft. or carries
+    # the publisher ID of Microsoft (8wekyb3d8bbwe) or of Windows itself (cw5n1h2txyewy), as with
+    # MicrosoftWindows.Client.CBS, windows.immersivecontrolpanel or MSTeams; Microsoft apps name
+    # groups like "Microsoft Edge". Matching words anywhere in the name counted rules such as
+    # "Clash for Windows" or "WPS Office". Kept free of outside state: test_kill_switch_powershell.py
+    # runs it on Windows and checks the three patterns with Python everywhere.
+    param([string]$Group)
+    $resourcePattern = '(?i)^@(?:\{Microsoft\.|%(?:SystemRoot|windir)%\\|[a-z]:\\windows\\|[a-z0-9_.-]+\.(?:dll|exe|mui),)'
+    $packagePattern = '(?i)^@\{[^?}]*_(?:8wekyb3d8bbwe|cw5n1h2txyewy)[?}]'
+    $groupNamePattern = '(?i)^(?:Microsoft|Windows|Core Networking)\b'
+    ($Group -match $resourcePattern) -or ($Group -match $packagePattern) -or ($Group -match $groupNamePattern)
+}
+
 $profiles = @(Invoke-LocalFirewallProbe 'ActiveStore firewall profiles' {
     Get-NetFirewallProfile -PolicyStore ActiveStore -ErrorAction Stop |
         Sort-Object -Property Name |
@@ -102,7 +118,7 @@ $outboundRules = Invoke-LocalFirewallProbe 'ActiveStore outbound rules' {
                     'Allow' {
                         $counts.Allow += 1
                         $nameText = "$($rule.Name) $($rule.DisplayName) $($rule.Group)"
-                        if ($nameText -match '(?i)(?:Microsoft\.|Windows|@\{Microsoft\.|@FirewallAPI\.dll|Core Networking|mDNS|Cortana|Edge|Office|OneDrive|Defender)') {
+                        if (Test-MicrosoftRuleGroup ([string]$rule.Group)) {
                             $allowBreakdown.BuiltInOrMicrosoft += 1
                         } else {
                             $allowBreakdown.OtherThirdPartyOrCustom += 1
@@ -140,7 +156,7 @@ $outboundRules = Invoke-LocalFirewallProbe 'ActiveStore outbound rules' {
 }
 
 if ($null -ne $outboundRules -and $outboundRules.MsixClaudeAllowCount -gt 0) {
-    $warnings.Add('Detected enabled Outbound Allow firewall rules matching Claude/Cowork (e.g. MSIX package rules); explicit Allow overrides DefaultOutboundAction=Block when TUN disconnects.')
+    $warnings.Add('Detected enabled Outbound Allow firewall rules whose name, display name or group contains the word Claude or Cowork (for example MSIX package rules); explicit Allow overrides DefaultOutboundAction=Block when TUN disconnects.')
 }
 
 [pscustomobject]@{
@@ -156,7 +172,9 @@ if ($null -ne $outboundRules -and $outboundRules.MsixClaudeAllowCount -gt 0) {
     EvidenceLimits                  = @(
         'Counts cover enabled outbound rules in ActiveStore across all profiles. Individual rules can have additional conditions.'
         'An unset or NotConfigured action is not a verified allow or block result.'
-        'Allow breakdown classifies rules heuristically by name/group without exposing paths or rule names; review third-party allow rules locally.'
+        'Allow breakdown is a heuristic on the rule group (Windows resource strings; packaged apps named Microsoft.* or published by Microsoft or Windows, by publisher ID; groups starting with Microsoft, Windows or Core Networking) and does not expose paths or rule names; rules without such a group count as third-party or custom, which can include some Windows rules with other groups. Review third-party allow rules locally.'
+        'MsixClaudeOutboundAllowCount counts every enabled outbound allow rule whose name, display name or group contains the word Claude or Cowork, MSIX or not.'
+        'LanDnsPort53OutboundBlockCount counts enabled outbound block rules with remote port 53, whatever their addresses and adapters.'
         'This inventory sends no traffic and cannot verify whether tunnel failure blocks subsequent connections.'
     )
 } | ConvertTo-Json -Depth 5

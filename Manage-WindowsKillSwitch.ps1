@@ -4,10 +4,12 @@
 Manage a persistent, outbound Windows Firewall guard for explicit physical uplinks.
 .DESCRIPTION
 Preview generates a rule plan natively in PowerShell without invoking external interpreters
-or writing settings. Install and Remove require an elevated, local Windows console, verify
-that the script directory is not writable by unprivileged shared groups, and write a private,
-redacted installation log. Status observes managed policy. Only separate fault probes and
-filter events can establish that a tested connection was blocked.
+or writing settings. Install and Remove require an elevated, local Windows console and write a
+private, redacted installation log. Install refuses to run from a directory that unprivileged
+shared groups can change, or from a volume without NTFS/ReFS permissions; Remove only warns
+about the location (and runs without a log if none can be written), so that it can always take
+the rules away again. Status observes managed policy. Only separate fault probes and filter
+events can establish that a tested connection was blocked.
 #>
 [CmdletBinding()]
 param(
@@ -54,6 +56,12 @@ try {
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 } catch {
     # Output may not be attached to a console.
+}
+
+function Write-StderrWarning {
+    # Warnings go to stderr, so that the JSON on stdout stays parseable.
+    param([string]$Message)
+    [Console]::Error.WriteLine("WARNING: $Message")
 }
 
 function ConvertTo-IPv4UInt32 {
@@ -157,13 +165,69 @@ function New-PlanRule {
     }
 }
 
+function Test-LiteralInterfaceAlias {
+    # The same rules as build_kill_switch.py and build_lan_dns_guard.py: 1-128 characters, no
+    # surrounding white space, no leading '-', not "Any", none of * ? [ ] ` " \, and only
+    # characters Python's str.isprintable() accepts (no control, format, private-use, unassigned
+    # or unpaired surrogate code points, and no separator other than the ASCII space).
+    param([string]$Alias)
+    if ($null -eq $Alias -or $Alias.Length -lt 1 -or $Alias.Length -gt 128 -or
+        $Alias -cne $Alias.Trim() -or $Alias.StartsWith('-') -or
+        $Alias.Equals('any', [StringComparison]::OrdinalIgnoreCase) -or
+        $Alias.IndexOfAny([char[]]'*?[]`"\') -ge 0) {
+        return $false
+    }
+    for ($i = 0; $i -lt $Alias.Length; $i++) {
+        $category = [string][Globalization.CharUnicodeInfo]::GetUnicodeCategory($Alias, $i)
+        if ($category -in @('Control', 'Format', 'Surrogate', 'PrivateUse', 'OtherNotAssigned', 'LineSeparator', 'ParagraphSeparator')) {
+            return $false
+        }
+        if ($category -eq 'SpaceSeparator' -and $Alias[$i] -ne [char]' ') { return $false }
+        if ([char]::IsHighSurrogate($Alias[$i])) { $i++ }
+    }
+    $true
+}
+
+function Format-AliasForMessage {
+    # Quote an adapter name for an error message, with invisible characters written as \uXXXX.
+    param([string]$Alias)
+    if ($null -eq $Alias) { return '<none>' }
+    $text = -join @(foreach ($ch in $Alias.ToCharArray()) {
+        $category = [string][Globalization.CharUnicodeInfo]::GetUnicodeCategory($ch)
+        if ($ch -ne [char]' ' -and $category -in @('Control', 'Format', 'Surrogate', 'PrivateUse', 'OtherNotAssigned', 'LineSeparator', 'ParagraphSeparator', 'SpaceSeparator')) {
+            '\u{0:X4}' -f [int]$ch
+        } else {
+            [string]$ch
+        }
+    })
+    "'$text'"
+}
+
+function Get-KitPhysicalAdapter {
+    # One meaning of "physical adapter" for -IncludeAllPhysicalAdapters, for checking the selected
+    # names and for the coverage check: the adapters whose HardwareInterface property is true.
+    @(Get-NetAdapter -IncludeHidden -ErrorAction Stop | Where-Object { $_.HardwareInterface -eq $true })
+}
+
 function New-RulePlan {
     $candidateAliases = @()
+    if ($InterfaceAlias) {
+        $explicitSeen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        foreach ($item in $InterfaceAlias) {
+            if (-not (Test-LiteralInterfaceAlias $item)) {
+                throw "Use literal interface aliases without wildcards or control characters: $(Format-AliasForMessage $item)."
+            }
+            if (-not $explicitSeen.Add($item)) {
+                throw "Interface aliases must be unique: $(Format-AliasForMessage $item) is given twice."
+            }
+        }
+    }
     if ($IncludeAllPhysicalAdapters) {
-        $detected = @(Get-NetAdapter -Physical -IncludeHidden -ErrorAction Stop | ForEach-Object { [string]$_.Name })
+        $detected = @(Get-KitPhysicalAdapter | ForEach-Object { [string]$_.Name })
         $candidateAliases += $detected
     }
     if ($InterfaceAlias) {
+        # -InterfaceAlias and -IncludeAllPhysicalAdapters together are merged.
         foreach ($item in $InterfaceAlias) {
             if ($candidateAliases -notcontains $item) { $candidateAliases += $item }
         }
@@ -174,19 +238,18 @@ function New-RulePlan {
 
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($alias in $candidateAliases) {
-        if (
-            $null -eq $alias -or $alias.Length -lt 1 -or $alias.Length -gt 128 -or
-            $alias -cne $alias.Trim() -or $alias.StartsWith('-') -or
-            $alias.Equals('any', [StringComparison]::OrdinalIgnoreCase) -or
-            $alias -match '[\x00-\x1F\x7F*?\[\]`"\\]'
-        ) {
-            throw 'Use literal interface aliases without wildcards or control characters.'
+        if (-not (Test-LiteralInterfaceAlias $alias)) {
+            throw "Use literal interface aliases without wildcards or control characters: $(Format-AliasForMessage $alias)."
         }
         if (-not $seen.Add($alias)) {
-            throw 'Interface aliases must be unique.'
+            throw "Interface aliases must be unique: $(Format-AliasForMessage $alias)."
         }
     }
-    $sortedAliases = @($candidateAliases | Sort-Object { $_.ToLowerInvariant() })
+    # Ordinal order of the lower-cased names, like sorted(key=str.casefold) in build_kill_switch.py.
+    # Sort-Object would follow the current culture (for example pinyin order on Chinese Windows).
+    $sortedAliases = [string[]]@($candidateAliases)
+    $sortKeys = [string[]]@($sortedAliases | ForEach-Object { $_.ToLowerInvariant() })
+    [Array]::Sort($sortKeys, $sortedAliases, [StringComparer]::Ordinal)
 
     $upstreamInt = ConvertTo-IPv4UInt32 $UpstreamAddress
     if (-not (Test-AllowedUpstreamIPv4UInt32 $upstreamInt)) {
@@ -205,7 +268,7 @@ function New-RulePlan {
                 throw 'DHCP servers must be literal RFC 1918 IPv4 addresses.'
             }
             if ($srvInt -eq $upstreamInt) {
-                throw 'The upstream and a DHCP server cannot share an address.'
+                throw 'The upstream and a DHCP server cannot share an address. This layout is not supported: give the adapter a static IP address and install without -DhcpServer.'
             }
             $dhcpInts += [int64]$srvInt
         }
@@ -246,15 +309,37 @@ function New-RulePlan {
     }
 }
 
-function Get-DhcpEnabledAliases {
+function Get-DhcpCheck {
+    # Adapters with DHCP enabled, and adapters whose IPv4 settings cannot be read (a disabled
+    # adapter has none). Either kind needs -DhcpServer: once such an adapter is up with DHCP, its
+    # lease requests would be blocked.
     param([string[]]$Aliases)
-    @(foreach ($alias in $Aliases) {
+    $enabled = New-Object 'System.Collections.Generic.List[string]'
+    $unknown = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($alias in $Aliases) {
         $ipInterface = @(Get-NetIPInterface -InterfaceAlias $alias -AddressFamily IPv4 -ErrorAction SilentlyContinue)
-        if (@($ipInterface | Where-Object { [string]$_.Dhcp -eq 'Enabled' }).Count) { $alias }
-    })
+        if ($ipInterface.Count -eq 0) {
+            $unknown.Add($alias)
+        } elseif (@($ipInterface | Where-Object { [string]$_.Dhcp -eq 'Enabled' }).Count) {
+            $enabled.Add($alias)
+        }
+    }
+    [pscustomobject]@{ Enabled = @($enabled.ToArray()); Unknown = @($unknown.ToArray()) }
 }
 
 $DhcpGuidance = 'Find the DHCP server with: Get-CimInstance Win32_NetworkAdapterConfiguration | Where-Object DHCPEnabled | Select-Object Description, DHCPServer (or "ipconfig /all"), then pass it with -DhcpServer.'
+
+function Format-DhcpProblem {
+    param($Check)
+    $parts = @()
+    if (@($Check.Enabled).Count) {
+        $parts += "DHCP is enabled on $((@($Check.Enabled) | ForEach-Object { Format-AliasForMessage $_ }) -join ', ') but no -DhcpServer was given; lease renewal would be blocked and the network could drop."
+    }
+    if (@($Check.Unknown).Count) {
+        $parts += "The DHCP setting of $((@($Check.Unknown) | ForEach-Object { Format-AliasForMessage $_ }) -join ', ') could not be read (the adapter is disabled, or IPv4 is not bound to it); if it is later enabled with DHCP, its lease requests would be blocked. Enable it and run Preview again, select the adapters with -InterfaceAlias without it (instead of -IncludeAllPhysicalAdapters), or pass -DhcpServer."
+    }
+    "$($parts -join ' ') $DhcpGuidance"
+}
 
 function Assert-UnlinkedLocalDirectory {
     param([string]$Path, [string]$Label)
@@ -266,6 +351,9 @@ function Assert-UnlinkedLocalDirectory {
     if ([string]$drive.DriveType -notin @('Fixed', 'Removable', 'Ram')) {
         throw "$Label must be on a local drive."
     }
+    if (-not [IO.Directory]::Exists($full)) {
+        throw "$Label does not exist: $full"
+    }
     $ancestors = @()
     for ($dir = [IO.DirectoryInfo]::new($full); $null -ne $dir; $dir = $dir.Parent) {
         $ancestors = @($dir) + $ancestors
@@ -273,39 +361,78 @@ function Assert-UnlinkedLocalDirectory {
     foreach ($dir in $ancestors) {
         $attr = [IO.File]::GetAttributes($dir.FullName)
         if (($attr -band [IO.FileAttributes]::ReparsePoint) -or -not ($attr -band [IO.FileAttributes]::Directory)) {
-            throw "$Label must be a real directory without redirected parents."
+            throw "$Label must be a real directory without redirected parents: '$($dir.FullName)' has the reparse-point attribute (a symbolic link, a junction, or a cloud-synced folder such as OneDrive). Use a local folder that is neither linked nor synced."
         }
     }
     $full
 }
 
-function Assert-SafeElevatedScriptPath {
-    if (-not $PSCommandPath) { return }
-    $scriptDir = Assert-UnlinkedLocalDirectory -Path (Split-Path -Parent $PSCommandPath) -Label 'Script directory'
-    $attr = [IO.File]::GetAttributes($PSCommandPath)
-    if (($attr -band [IO.FileAttributes]::ReparsePoint) -or ($attr -band [IO.FileAttributes]::Directory)) {
-        throw 'Manage-WindowsKillSwitch.ps1 must be a regular local file without links.'
+function Get-SharedWriteGrant {
+    # Which allow entries let a shared, unprivileged group change a file, or add, rename or delete
+    # files in a directory? Read and execute rights pass (for example the Users entry on
+    # C:\Program Files). Kept free of outside state: test_kill_switch_powershell.py runs it with
+    # synthetic entries and checks that both management scripts carry the same text.
+    param([object[]]$Rule)
+    $groupNames = @{
+        'S-1-1-0'      = 'Everyone'
+        'S-1-5-4'      = 'INTERACTIVE'
+        'S-1-5-11'     = 'Authenticated Users'
+        'S-1-5-32-545' = 'Users'
+        'S-1-5-32-546' = 'Guests'
     }
-    $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($scriptDir))
-    if ($drive.DriveFormat -notin @('NTFS', 'ReFS')) { return }
+    # WriteData, AppendData, WriteExtendedAttributes, DeleteSubdirectoriesAndFiles, WriteAttributes,
+    # Delete, ChangePermissions and TakeOwnership (0x000D0156 = 852310), plus GENERIC_ALL and
+    # GENERIC_WRITE. Write, Modify and FullControl all contain one of these bits.
+    $changeRights = [long]0x000D0156 -bor [long]0x10000000 -bor [long]0x40000000
+    @(foreach ($entry in @($Rule)) {
+        if ($null -eq $entry) { continue }
+        if ([string]$entry.AccessControlType -ne 'Allow') { continue }
+        # Inherit-only entries apply to items created later inside a directory, not to the item itself.
+        if (([int]$entry.PropagationFlags -band 2) -ne 0) { continue }
+        $sid = [string]$entry.IdentityReference
+        if (-not $groupNames.ContainsKey($sid)) { continue }
+        $rights = ([long]$entry.FileSystemRights) -band 0xFFFFFFFFL
+        if (($rights -band $changeRights) -ne 0) {
+            [pscustomobject]@{ Group = $groupNames[$sid]; Sid = $sid; Rights = [string]$entry.FileSystemRights }
+        }
+    })
+}
 
-    # Reject script execution as Administrator from directories writable by shared unprivileged SIDs.
-    $sharedSids = @('S-1-1-0', 'S-1-5-32-545', 'S-1-5-11', 'S-1-5-32-546')
-    $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
-        [Security.AccessControl.FileSystemRights]::FullControl -bor
-        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [Security.AccessControl.FileSystemRights]::TakeOwnership
-    foreach ($itemPath in @($scriptDir, $PSCommandPath)) {
-        $acl = Get-Acl -LiteralPath $itemPath -ErrorAction Stop
-        foreach ($rule in $acl.Access) {
-            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
-            $sid = try { $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value } catch { $null }
-            if ($sid -in $sharedSids -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
-                throw 'Move this kit into a private directory (such as your user profile or Program Files) before running elevated.'
+function Assert-SafeElevatedScriptPath {
+    # Install refuses to run elevated from a location that other local users could change. Remove
+    # only warns: if the script had been altered, this check would be gone too, so stopping Remove
+    # here protects nothing and only keeps the network blocked.
+    param([switch]$WarnOnly)
+    if (-not $PSCommandPath) { return }
+    $problems = New-Object 'System.Collections.Generic.List[string]'
+    try {
+        $scriptDir = Assert-UnlinkedLocalDirectory -Path (Split-Path -Parent $PSCommandPath) -Label 'Script directory'
+        $attr = [IO.File]::GetAttributes($PSCommandPath)
+        if (($attr -band [IO.FileAttributes]::ReparsePoint) -or ($attr -band [IO.FileAttributes]::Directory)) {
+            $problems.Add('Manage-WindowsKillSwitch.ps1 must be a regular local file without links.')
+        }
+        $drive = [IO.DriveInfo]::new([IO.Path]::GetPathRoot($scriptDir))
+        if ($drive.DriveFormat -notin @('NTFS', 'ReFS')) {
+            $problems.Add("The script directory is on a $($drive.DriveFormat) volume, which has no file permissions, so any local user could change these scripts. Copy the kit to a private folder on an NTFS drive, for example under your user profile.")
+        } else {
+            foreach ($itemPath in @($scriptDir, $PSCommandPath)) {
+                $acl = Get-Acl -LiteralPath $itemPath -ErrorAction Stop
+                $entries = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+                foreach ($grant in @(Get-SharedWriteGrant -Rule $entries)) {
+                    $problems.Add("$($grant.Group) ($($grant.Sid)) may change '$itemPath' (rights: $($grant.Rights)). Move this kit into a folder that only administrators and your own account can change, for example a subfolder of your user profile or of C:\Program Files.")
+                }
             }
         }
+    } catch {
+        $problems.Add($_.Exception.Message)
     }
+    if ($problems.Count -eq 0) { return }
+    if ($WarnOnly) {
+        foreach ($problem in $problems) { Write-StderrWarning $problem }
+        Write-StderrWarning 'Continuing, because Remove only deletes rules that this kit created. Move the kit before the next Install.'
+        return
+    }
+    throw ($problems -join ' ')
 }
 
 function Set-PrivateFileAcl {
@@ -447,7 +574,7 @@ function Get-GuardPrerequisites {
         foreach ($disabled in @($firewallProfile.DisabledInterfaceAliases | Where-Object { $_ -and $_ -ne 'NotConfigured' })) {
             foreach ($alias in $Plan.InterfaceAliases) {
                 if ($disabled -eq 'Any' -or $alias -like $disabled) {
-                    throw 'A profile excludes at least one selected adapter from Windows Firewall.'
+                    throw "The $($firewallProfile.Name) profile excludes the selected adapter $(Format-AliasForMessage $alias) from Windows Firewall."
                 }
             }
         }
@@ -456,7 +583,7 @@ function Get-GuardPrerequisites {
     $physical = @($allAdapters | Where-Object { $_.HardwareInterface -eq $true })
     foreach ($alias in $Plan.InterfaceAliases) {
         if (@($physical | Where-Object { $_.Name -eq $alias }).Count -ne 1) {
-            throw "The selected physical adapter could not be identified: $alias"
+            throw "The selected physical adapter could not be identified: $alias. Only adapters whose HardwareInterface property is True can be protected; check with: Get-NetAdapter -IncludeHidden | Select-Object Name, HardwareInterface, Status"
         }
     }
     $otherActivePhysical = @($physical | Where-Object {
@@ -480,10 +607,37 @@ function Get-GuardPrerequisites {
     }
 }
 
+function Write-VirtualAdapterWarning {
+    param($Prerequisites)
+    if ($null -eq $Prerequisites) { return }
+    $names = @($Prerequisites.ActiveVirtualNonTunnelAdapters)
+    if ($names.Count) {
+        Write-StderrWarning "Connected virtual adapters are outside this guard: $(($names | ForEach-Object { Format-AliasForMessage $_ }) -join ', '). Whether traffic that leaves through them (a Hyper-V external switch, VM NAT, hotspot sharing) is blocked has not been tested; do not treat it as protected."
+    }
+}
+
 function Write-GuardLog {
     param([string]$Event, $Data)
-    $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Event = $Event; Action = $Action; Data = $Data } |
-        ConvertTo-Json -Depth 8 -Compress))
+    if ($null -eq $logWriter -or $null -eq $logPath) { return }
+    try {
+        $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Event = $Event; Action = $Action; Data = $Data } |
+            ConvertTo-Json -Depth 8 -Compress))
+    } catch {
+        if ($Action -ne 'Remove') { throw }
+        $script:logPath = $null
+        Write-StderrWarning "Remove continues with an incomplete log: $($_.Exception.Message)"
+    }
+}
+
+function Close-GuardLog {
+    param($Stream)
+    if ($null -eq $Stream) { return }
+    try {
+        $Stream.Dispose()
+    } catch {
+        if ($Action -ne 'Remove') { throw }
+        Write-StderrWarning "Could not close the Remove log: $($_.Exception.Message)"
+    }
 }
 
 function Remove-OwnedRules {
@@ -535,13 +689,14 @@ function Get-GuardStatus {
 if ($Action -eq 'Preview') {
     $plan = New-RulePlan
     if (-not $DhcpServer) {
-        $dhcpAliases = @(Get-DhcpEnabledAliases $plan.InterfaceAliases)
-        if ($dhcpAliases.Count) {
-            [Console]::Error.WriteLine("WARNING: DHCP is enabled on $($dhcpAliases.Count) selected adapter(s) but no -DhcpServer was given. Install will refuse to continue because lease renewal would be blocked and the network could drop. $DhcpGuidance")
+        $dhcpCheck = Get-DhcpCheck $plan.InterfaceAliases
+        if (@($dhcpCheck.Enabled).Count -or @($dhcpCheck.Unknown).Count) {
+            Write-StderrWarning "$(Format-DhcpProblem $dhcpCheck) Install will refuse to continue until this is resolved."
         }
     }
     $plan | ConvertTo-Json -Depth 8
-    return
+    # exit, not return: "& .\Manage-WindowsKillSwitch.ps1 ...; $LASTEXITCODE" then shows 0, as with LAN DNS Guard.
+    exit 0
 }
 
 Import-Module NetSecurity -ErrorAction Stop
@@ -556,8 +711,9 @@ if ($Action -eq 'Status') {
     }
     $status = Get-GuardStatus $plan
     $status | ConvertTo-Json -Depth 8
+    Write-VirtualAdapterWarning $status.Prerequisites
     if ($status.ConfigurationMatched -eq $false) { exit 2 }
-    return
+    exit 0
 }
 
 $operatorSid = $null
@@ -572,21 +728,37 @@ try {
     $identity.Dispose()
 }
 
-Assert-SafeElevatedScriptPath
+Assert-SafeElevatedScriptPath -WarnOnly:($Action -eq 'Remove')
 $plan = if ($Action -eq 'Install') { New-RulePlan } else { $null }
 
-$logDir = Assert-UnlinkedLocalDirectory -Path $LogDirectory -Label 'LogDirectory'
-$logName = 'CPPEK-KillSwitch-{0}-{1}.jsonl' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'), [Guid]::NewGuid().ToString('N')
-$logPath = Join-Path $logDir $logName
-$logStream = [IO.File]::Open($logPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+# Install needs its private log. Remove carries on without one, so that a broken log location
+# cannot keep the network blocked.
+$logPath = $null
+$logStream = $null
 $logWriter = $null
-$mutex = $null
-$ownsMutex = $false
-$created = @()
 try {
+    $logDir = Assert-UnlinkedLocalDirectory -Path $LogDirectory -Label 'LogDirectory'
+    $logName = 'CPPEK-KillSwitch-{0}-{1}.jsonl' -f [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssZ'), [Guid]::NewGuid().ToString('N')
+    $logPath = Join-Path $logDir $logName
+    $logStream = [IO.File]::Open($logPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::Read)
     Set-PrivateFileAcl -FilePath $logPath -OperatorSid $operatorSid
     $logWriter = [IO.StreamWriter]::new($logStream, [Text.UTF8Encoding]::new($false))
     $logWriter.AutoFlush = $true
+} catch {
+    $logProblem = $_.Exception.Message
+    Close-GuardLog $logStream
+    $logStream = $null
+    $logWriter = $null
+    if ($Action -ne 'Remove') { throw }
+    Write-StderrWarning "No log is written for this Remove: $logProblem"
+    $logPath = $null
+}
+
+$mutex = $null
+$ownsMutex = $false
+$created = @()
+$exitCode = 0
+try {
     Write-GuardLog 'started' @{ PolicyGroup = $Group; HostVersion = [Environment]::OSVersion.Version.ToString() }
     $mutex = [Threading.Mutex]::new($false, "Global\$Group")
     try {
@@ -599,70 +771,90 @@ try {
     if ($Action -eq 'Remove') {
         $removed = @(Remove-OwnedRules $KnownNames)
         $status = Get-GuardStatus $null
-        if (@($status.PersistentRules).Count -or @($status.ActiveRules).Count) {
-            throw 'Some managed rules remain visible. Inspect Status and retry Remove locally.'
+        $ownedLeft = @(@($status.PersistentRules) + @($status.ActiveRules) | ForEach-Object { [string]$_.Name } | Sort-Object -Unique)
+        if ($ownedLeft.Count) {
+            throw "Some rules created by this kit remain visible after Remove: $($ownedLeft -join ', '). Inspect Status and retry Remove locally."
         }
-        Write-GuardLog 'removed' @{ RemovedRuleCount = $removed.Count; Rules = $removed }
-        [pscustomobject]@{ Status = 'removed'; RemovedRules = $removed; LogPath = $logPath } | ConvertTo-Json -Depth 5
-        return
-    }
-
-    $prereq = Get-GuardPrerequisites $plan
-    if (-not $AllowUncoveredPhysicalAdapters -and -not $prereq.AllActivePhysicalCovered) {
-        throw "Uncovered active physical adapters detected ($($prereq.OtherActivePhysicalAdapters -join ', ')). Include all active physical adapters (or use -IncludeAllPhysicalAdapters) so traffic cannot bypass the guard."
-    }
-    if (-not $DhcpServer) {
-        $dhcpAliases = @(Get-DhcpEnabledAliases $plan.InterfaceAliases)
-        if ($dhcpAliases.Count) {
-            throw "DHCP is enabled on $($dhcpAliases.Count) selected adapter(s) but no -DhcpServer was given; lease renewal would be blocked and the network could drop. $DhcpGuidance"
+        $remaining = @($status.ForeignOrUnexpectedRules)
+        if ($remaining.Count) {
+            # Rules with this group or these names whose name, group or description differs from what
+            # this script creates (for example a description edited in wf.msc). They may still block
+            # traffic, so this is not reported as "removed".
+            Write-GuardLog 'removed-other-rules-remain' @{ RemovedRuleCount = $removed.Count; Rules = $removed; RemainingRuleCount = $remaining.Count }
+            [pscustomobject][ordered]@{
+                Status         = 'removed-other-rules-remain'
+                RemovedRules   = $removed
+                RemainingRules = $remaining
+                NextStep       = "These rules use the group $Group or the names of this kit, but were not created by this script exactly as listed, so Remove left them in place. They may still block traffic. Check them in wf.msc (Outbound Rules, Filter by Group) or with Get-NetFirewallRule, and delete the ones you recognise with Remove-NetFirewallRule -PolicyStore PersistentStore -Name <name>. See WINDOWS-KILL-SWITCH.md."
+                LogPath        = $logPath
+            } | ConvertTo-Json -Depth 5
+            $exitCode = 2
+        } else {
+            Write-GuardLog 'removed' @{ RemovedRuleCount = $removed.Count; Rules = $removed }
+            [pscustomobject]@{ Status = 'removed'; RemovedRules = $removed; LogPath = $logPath } | ConvertTo-Json -Depth 5
         }
-    }
-    Write-GuardLog 'preflight' @{
-        Profiles = $prereq.Profiles
-        SelectedAdapterCount = @($prereq.PhysicalAdapters).Count
-        OtherActivePhysicalAdapterCount = @($prereq.OtherActivePhysicalAdapters).Count
-        ActiveVirtualNonTunnelAdapterCount = @($prereq.ActiveVirtualNonTunnelAdapters).Count
-    }
-    Write-GuardLog 'planned' (Get-RedactedPlanSummary $plan)
+    } else {
+        $prereq = Get-GuardPrerequisites $plan
+        if (-not $AllowUncoveredPhysicalAdapters -and -not $prereq.AllActivePhysicalCovered) {
+            throw "Uncovered active physical adapters detected ($($prereq.OtherActivePhysicalAdapters -join ', ')). Include all active physical adapters (or use -IncludeAllPhysicalAdapters) so traffic cannot bypass the guard."
+        }
+        if (-not $DhcpServer) {
+            $dhcpCheck = Get-DhcpCheck $plan.InterfaceAliases
+            if (@($dhcpCheck.Enabled).Count -or @($dhcpCheck.Unknown).Count) {
+                throw (Format-DhcpProblem $dhcpCheck)
+            }
+        }
+        Write-GuardLog 'preflight' @{
+            Profiles = $prereq.Profiles
+            SelectedAdapterCount = @($prereq.PhysicalAdapters).Count
+            OtherActivePhysicalAdapterCount = @($prereq.OtherActivePhysicalAdapters).Count
+            ActiveVirtualNonTunnelAdapterCount = @($prereq.ActiveVirtualNonTunnelAdapters).Count
+        }
+        Write-GuardLog 'planned' (Get-RedactedPlanSummary $plan)
 
-    $persisted = @(Get-PolicySet 'PersistentStore')
-    $active = @(Get-PolicySet 'ActiveStore')
-    if (@($persisted).Count -or @($active).Count) {
-        if ((Test-RulesMatch $persisted $plan $true) -and (Test-RulesMatch $active $plan $true)) {
+        $persisted = @(Get-PolicySet 'PersistentStore')
+        $active = @(Get-PolicySet 'ActiveStore')
+        if (@($persisted).Count -or @($active).Count) {
+            if (-not ((Test-RulesMatch $persisted $plan $true) -and (Test-RulesMatch $active $plan $true))) {
+                throw 'The managed namespace already contains a different, incomplete, or foreign policy. Nothing was changed. To change adapters, upstream or DHCP servers, run -Action Remove first and then -Action Install with the new parameters (the guard is off between the two steps); run -Action Status to see what is there.'
+            }
             $status = Get-GuardStatus $plan
             Write-GuardLog 'already-installed' @{ ConfigurationMatched = $status.ConfigurationMatched; RuleCount = @($status.ActiveRules).Count }
             [pscustomobject]@{ Status = 'already-installed'; LogPath = $logPath; Policy = $status } | ConvertTo-Json -Depth 8
-            return
-        }
-        throw 'The managed namespace already contains a different, incomplete, or foreign policy. Inspect Status before changing it.'
-    }
-    foreach ($entry in $plan.Rules) {
-        $params = @{
-            PolicyStore = 'PersistentStore'; Name = $entry.Name; DisplayName = $entry.Name
-            Group = $Group; Description = $Owner; Enabled = 'False'; Direction = 'Outbound'
-            Action = 'Block'; Profile = 'Any'; InterfaceAlias = [string[]]$plan.InterfaceAliases
-            RemoteAddress = [string[]]$entry.RemoteAddresses
-        }
-        if ($entry.Protocol -ne 'Any') { $params.Protocol = $entry.Protocol }
-        if (@($entry.RemotePorts).Count) { $params.RemotePort = [string[]]$entry.RemotePorts }
-        if (@($entry.LocalPorts).Count) { $params.LocalPort = [string[]]$entry.LocalPorts }
-        $created += $entry.Name
-        New-NetFirewallRule @params -ErrorAction Stop | Out-Null
-    }
-    if (-not (Test-RulesMatch @(Get-PolicySet 'PersistentStore') $plan $false)) {
-        throw 'The staged firewall filters differ from the plan.'
-    }
-    Write-GuardLog 'staged' @{ RuleNames = $created; Enabled = $false }
-    Enable-NetFirewallRule -PolicyStore PersistentStore -Name $created -ErrorAction Stop | Out-Null
+            Write-VirtualAdapterWarning $status.Prerequisites
+        } else {
+            foreach ($entry in $plan.Rules) {
+                $params = @{
+                    PolicyStore = 'PersistentStore'; Name = $entry.Name; DisplayName = $entry.Name
+                    Group = $Group; Description = $Owner; Enabled = 'False'; Direction = 'Outbound'
+                    Action = 'Block'; Profile = 'Any'; InterfaceAlias = [string[]]$plan.InterfaceAliases
+                    RemoteAddress = [string[]]$entry.RemoteAddresses
+                }
+                if ($entry.Protocol -ne 'Any') { $params.Protocol = $entry.Protocol }
+                if (@($entry.RemotePorts).Count) { $params.RemotePort = [string[]]$entry.RemotePorts }
+                if (@($entry.LocalPorts).Count) { $params.LocalPort = [string[]]$entry.LocalPorts }
+                $created += $entry.Name
+                New-NetFirewallRule @params -ErrorAction Stop | Out-Null
+            }
+            if (-not (Test-RulesMatch @(Get-PolicySet 'PersistentStore') $plan $false)) {
+                throw 'The staged firewall filters differ from the plan.'
+            }
+            Write-GuardLog 'staged' @{ RuleNames = $created; Enabled = $false }
+            Enable-NetFirewallRule -PolicyStore PersistentStore -Name $created -ErrorAction Stop | Out-Null
 
-    $status = Get-GuardStatus $plan
-    if ($status.ConfigurationMatched -ne $true) { throw 'The effective firewall filters differ from the plan.' }
-    Write-GuardLog 'installed' @{ ConfigurationMatched = $status.ConfigurationMatched; RuleCount = @($status.ActiveRules).Count }
-    [pscustomobject]@{ Status = 'installed'; LogPath = $logPath; Policy = $status } | ConvertTo-Json -Depth 8
+            $status = Get-GuardStatus $plan
+            if ($status.ConfigurationMatched -ne $true) { throw 'The effective firewall filters differ from the plan.' }
+            Write-GuardLog 'installed' @{ ConfigurationMatched = $status.ConfigurationMatched; RuleCount = @($status.ActiveRules).Count }
+            [pscustomobject]@{ Status = 'installed'; LogPath = $logPath; Policy = $status } | ConvertTo-Json -Depth 8
+            Write-VirtualAdapterWarning $status.Prerequisites
+        }
+    }
 } catch {
     $original = $_
     $rollback = 'not-required'
     if ($created.Count) {
+        # Take the rules of this attempt away before reporting the error, so that a failed Install
+        # does not leave the network blocked.
         try {
             Remove-OwnedRules $created | Out-Null
             $remaining = @(Get-PolicySet 'PersistentStore') + @(Get-PolicySet 'ActiveStore')
@@ -674,16 +866,19 @@ try {
             $rollback = 'incomplete-run-Remove-locally'
         }
     }
-    if ($null -ne $logWriter) {
-        try {
-            Write-GuardLog 'failed' @{ Rollback = $rollback; ErrorType = $original.Exception.GetType().Name }
-        } catch {
-            # Report the log path and rollback finding even if the log disk failed.
-        }
+    try {
+        Write-GuardLog 'failed' @{ Rollback = $rollback; ErrorType = $original.Exception.GetType().Name }
+    } catch {
+        # Report the log path and rollback finding even if the log disk failed.
     }
-    throw "$($original.Exception.Message) Rollback: $rollback. Log: $logPath"
+    $logText = if ($logPath) { $logPath } else { 'none' }
+    if ($Action -eq 'Install') {
+        throw "$($original.Exception.Message) Rollback: $rollback. Log: $logText"
+    }
+    throw "$($original.Exception.Message) Log: $logText"
 } finally {
     if ($ownsMutex) { $mutex.ReleaseMutex() }
     if ($null -ne $mutex) { $mutex.Dispose() }
-    if ($null -ne $logWriter) { $logWriter.Dispose() } else { $logStream.Dispose() }
+    if ($null -ne $logWriter) { Close-GuardLog $logWriter } else { Close-GuardLog $logStream }
 }
+exit $exitCode
