@@ -472,6 +472,52 @@ class KillSwitchPowerShellTests(unittest.TestCase):
             cwd=SCRIPTS, env=env, capture_output=True, text=True, encoding="utf-8", timeout=timeout, check=False,
         )
 
+    def test_remove_completes_when_log_writes_and_flushes_fail(self):
+        for script in MANAGEMENT_SCRIPTS:
+            with self.subTest(script=script):
+                command = """
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$Action = 'Remove'
+$Group = 'CPPEK-test-' + [Guid]::NewGuid().ToString('N')
+$KnownNames = @('owned')
+$logPath = 'simulated.jsonl'
+$logWriter = [pscustomobject]@{}
+$logWriter | Add-Member ScriptMethod WriteLine { throw 'simulated write failure' }
+$logWriter | Add-Member ScriptMethod Dispose { throw 'simulated flush failure' }
+function Remove-OwnedRules { param($Names) $Names }
+function Get-GuardStatus { @{ PersistentRules = @(); ActiveRules = @(); ForeignOrUnexpectedRules = @() } }
+function Get-PolicySet {}
+"""
+                source = _read_script(script)
+                functions = re.findall(r"^function ([\w-]+GuardLog|Write-StderrWarning) \{", source, re.M)
+                command += "\n".join(_function_source(source, name) for name in functions) + "\n"
+                command += f"$source = Get-Content -Raw -LiteralPath '{script}'\n"
+                command += ". ([scriptblock]::Create($source.Substring($source.IndexOf('$mutex = $null'))))\n"
+                result = self.run_powershell(command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(result.stdout)
+                self.assertEqual(report["Status"], "removed")
+                self.assertEqual(report.get("RemovedNames", report.get("RemovedRules")), ["owned"])
+                self.assertIsNone(report["LogPath"])
+                self.assertIn("simulated write failure", result.stderr)
+                self.assertIn("simulated flush failure", result.stderr)
+
+    def test_install_stops_when_required_log_cannot_be_written(self):
+        for script in MANAGEMENT_SCRIPTS:
+            with self.subTest(script=script):
+                command = _extract_function_command(script, "Write-GuardLog") + """
+$ErrorActionPreference = 'Stop'
+$Action = 'Install'
+$logPath = 'simulated.jsonl'
+$logWriter = [pscustomobject]@{}
+$logWriter | Add-Member ScriptMethod WriteLine { throw 'simulated write failure' }
+Write-GuardLog 'started' @{}
+"""
+                result = self.run_powershell(command)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("simulated write failure", result.stderr)
+
     def test_windows_powershell_parses_all_bundled_scripts(self):
         command = """
 $ErrorActionPreference = 'Stop'

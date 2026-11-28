@@ -618,9 +618,26 @@ function Write-VirtualAdapterWarning {
 
 function Write-GuardLog {
     param([string]$Event, $Data)
-    if ($null -eq $logWriter) { return }
-    $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Event = $Event; Action = $Action; Data = $Data } |
-        ConvertTo-Json -Depth 8 -Compress))
+    if ($null -eq $logWriter -or $null -eq $logPath) { return }
+    try {
+        $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Event = $Event; Action = $Action; Data = $Data } |
+            ConvertTo-Json -Depth 8 -Compress))
+    } catch {
+        if ($Action -ne 'Remove') { throw }
+        $script:logPath = $null
+        Write-StderrWarning "Remove continues with an incomplete log: $($_.Exception.Message)"
+    }
+}
+
+function Close-GuardLog {
+    param($Stream)
+    if ($null -eq $Stream) { return }
+    try {
+        $Stream.Dispose()
+    } catch {
+        if ($Action -ne 'Remove') { throw }
+        Write-StderrWarning "Could not close the Remove log: $($_.Exception.Message)"
+    }
 }
 
 function Remove-OwnedRules {
@@ -729,7 +746,7 @@ try {
     $logWriter.AutoFlush = $true
 } catch {
     $logProblem = $_.Exception.Message
-    if ($null -ne $logStream) { $logStream.Dispose() }
+    Close-GuardLog $logStream
     $logStream = $null
     $logWriter = $null
     if ($Action -ne 'Remove') { throw }
@@ -862,6 +879,6 @@ try {
 } finally {
     if ($ownsMutex) { $mutex.ReleaseMutex() }
     if ($null -ne $mutex) { $mutex.Dispose() }
-    if ($null -ne $logWriter) { $logWriter.Dispose() } elseif ($null -ne $logStream) { $logStream.Dispose() }
+    if ($null -ne $logWriter) { Close-GuardLog $logWriter } else { Close-GuardLog $logStream }
 }
 exit $exitCode

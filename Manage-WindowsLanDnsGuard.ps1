@@ -416,9 +416,26 @@ function Remove-OwnedRules {
 
 function Write-GuardLog {
     param([string]$Event, $Data)
-    if ($null -eq $logWriter) { return }
-    $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Event = $Event; Action = $Action; Data = $Data } |
-        ConvertTo-Json -Depth 6 -Compress))
+    if ($null -eq $logWriter -or $null -eq $logPath) { return }
+    try {
+        $logWriter.WriteLine(([ordered]@{ Utc = [DateTime]::UtcNow.ToString('o'); Event = $Event; Action = $Action; Data = $Data } |
+            ConvertTo-Json -Depth 6 -Compress))
+    } catch {
+        if ($Action -ne 'Remove') { throw }
+        $script:logPath = $null
+        Write-StderrWarning "Remove continues with an incomplete log: $($_.Exception.Message)"
+    }
+}
+
+function Close-GuardLog {
+    param($Stream)
+    if ($null -eq $Stream) { return }
+    try {
+        $Stream.Dispose()
+    } catch {
+        if ($Action -ne 'Remove') { throw }
+        Write-StderrWarning "Could not close the Remove log: $($_.Exception.Message)"
+    }
 }
 
 function Resolve-TargetAliases {
@@ -494,7 +511,7 @@ try {
     $logWriter.AutoFlush = $true
 } catch {
     $logProblem = $_.Exception.Message
-    if ($null -ne $fileStream) { $fileStream.Dispose() }
+    Close-GuardLog $fileStream
     $fileStream = $null
     $logWriter = $null
     if ($Action -ne 'Remove') { throw }
@@ -534,13 +551,13 @@ try {
             RemovedCount   = $removed.Count
             RemovedNames   = $removed
             RemainingRules = $remaining
-            LogPath        = $logPath
         }
         if ($remaining.Count) {
             $result.NextStep = "These rules use the group $Group or the names of this kit, but were not created by this script exactly as listed, so Remove left them in place. They may still block DNS. Check them in wf.msc (Outbound Rules, Filter by Group) or with Get-NetFirewallRule, and delete the ones you recognise with Remove-NetFirewallRule -PolicyStore PersistentStore -Name <name>. See WINDOWS-KILL-SWITCH.md."
             $exitCode = 2
         }
         Write-GuardLog $result.Status @{ RemovedCount = $removed.Count; RemainingCount = $remaining.Count }
+        $result.LogPath = $logPath
         [pscustomobject]$result | ConvertTo-Json -Depth 4
     } else {
         $prereq = Get-GuardPrerequisites -Plan $plan
@@ -655,6 +672,6 @@ try {
 } finally {
     if ($ownsMutex) { $mutex.ReleaseMutex() }
     if ($null -ne $mutex) { $mutex.Dispose() }
-    if ($null -ne $logWriter) { $logWriter.Dispose() } elseif ($null -ne $fileStream) { $fileStream.Dispose() }
+    if ($null -ne $logWriter) { Close-GuardLog $logWriter } else { Close-GuardLog $fileStream }
 }
 exit $exitCode
